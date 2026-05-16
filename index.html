@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Optimal · Biometric Twin</title>
+<link rel="stylesheet" href="style.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app">
+  <div id="bg-grid"></div>
+  <div id="canvas-wrap"></div>
+  <svg id="leaders" xmlns="http://www.w3.org/2000/svg"></svg>
+  <div id="labels"></div>
+
+  <header id="hud">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 2 L22 8 L22 16 L12 22 L2 16 L2 8 Z" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>
+      </div>
+      <div class="brand-text">
+        <div class="brand-title">OPTIMAL · BIOMETRIC TWIN</div>
+        <div class="brand-sub">Patient #84210 · Session 2026.05.15 · 09:42 EST</div>
+      </div>
+    </div>
+
+    <nav class="tabs">
+      <button class="tab active">Composite</button>
+      <button class="tab">Cardio</button>
+      <button class="tab">Metabolic</button>
+      <button class="tab">Hormonal</button>
+      <button class="tab">Inflammation</button>
+    </nav>
+
+    <div class="status">
+      <div class="status-pill"><span></span>Live Scan · 89%</div>
+      <div class="status-meta">HR 58 · SpO₂ 99 · 36.6°C</div>
+    </div>
+  </header>
+
+  <aside id="sidebar">
+    <div class="side-block">
+      <div class="side-label">BIOMETRIC SCORE</div>
+      <div class="side-score">
+        <span class="score-num">91</span>
+        <span class="score-out">/ 100</span>
+      </div>
+      <div class="score-bar"><div class="score-fill" style="width:91%"></div></div>
+      <div class="side-trend">+4 vs last quarter</div>
+    </div>
+    <div class="side-block">
+      <div class="side-label">SYSTEMS</div>
+      <div class="system-row"><span>Cardiovascular</span><i class="dot ok"></i><b>96</b></div>
+      <div class="system-row"><span>Metabolic</span><i class="dot ok"></i><b>92</b></div>
+      <div class="system-row"><span>Hepatic</span><i class="dot ok"></i><b>94</b></div>
+      <div class="system-row"><span>Renal</span><i class="dot ok"></i><b>89</b></div>
+      <div class="system-row"><span>Endocrine</span><i class="dot watch"></i><b>78</b></div>
+      <div class="system-row"><span>Neuro</span><i class="dot ok"></i><b>93</b></div>
+      <div class="system-row"><span>Immune</span><i class="dot ok"></i><b>90</b></div>
+    </div>
+    <div class="side-block">
+      <div class="side-label">NEXT ACTION</div>
+      <div class="side-action">
+        <div class="action-title">Optimize Vitamin D</div>
+        <div class="action-body">5,000 IU daily × 12 weeks, recheck in 90 days.</div>
+      </div>
+    </div>
+  </aside>
+
+  <footer id="legend">
+    <div class="legend-items">
+      <div class="legend-item"><span style="background:#7CF5C1; box-shadow: 0 0 8px #7CF5C1"></span>Optimal</div>
+      <div class="legend-item"><span style="background:#F2C57C; box-shadow: 0 0 8px #F2C57C"></span>Monitor</div>
+      <div class="legend-item"><span style="background:#F26B7A; box-shadow: 0 0 8px #F26B7A"></span>Action</div>
+    </div>
+    <div class="legend-cta">DRAG TO ROTATE · SCROLL TO ZOOM</div>
+    <div class="ticker">
+      <span class="ticker-dot"></span>STREAMING · 240Hz · CHANNEL 03 ACTIVE
+    </div>
+  </footer>
+</div>
+<script type="module" src="main.js"></script>
+</body>
+</html>
