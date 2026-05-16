@@ -6,8 +6,9 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
-const SPACING = 0.085;
-const VOXEL_SIZE = SPACING * 0.78;
+const SPACING = 0.055;
+const POINT_SIZE = 0.085;
+const ORGAN_POINT_SIZE = 0.11;
 
 // ----- Geometry helpers -----
 const sq = (x) => x * x;
@@ -153,8 +154,23 @@ for (const k of insideSet) {
   }
   if (!isSurface) continue;
 
-  // Stochastic culling for "pixellated" sparseness — keep ~85%
-  if (Math.random() < 0.85) bodyVoxels.push([x, y, z]);
+  // Keep ALL surface voxels for a dense fuzzy shell, plus a sparse interior sample
+  // (interior voxels are added in a separate pass below)
+  bodyVoxels.push([x, y, z]);
+}
+
+// Sparse interior voxels for body solidity
+for (const k of insideSet) {
+  const [xi, yi, zi] = k.split(',').map(Number);
+  const x = xi * SPACING, y = yi * SPACING, z = zi * SPACING;
+  if (getOrgan(x, y, z)) continue;
+  // Check if this voxel is fully interior (all 6 neighbors inside)
+  let isInterior = true;
+  for (const [dx, dy, dz] of neighborOffsets) {
+    if (!insideSet.has(keyOf(xi + dx, yi + dy, zi + dz))) { isInterior = false; break; }
+  }
+  if (!isInterior) continue;
+  if (Math.random() < 0.12) bodyVoxels.push([x, y, z]);
 }
 
 // ----- Three.js scene -----
@@ -203,46 +219,88 @@ const fillLight = new THREE.DirectionalLight(0x7cf5c1, 0.3);
 fillLight.position.set(0, -2, 3);
 scene.add(fillLight);
 
-// Voxel geometry shared
-const voxelGeo = new THREE.BoxGeometry(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE);
-
-// Body shell material — slightly emissive cool steel
-const bodyMat = new THREE.MeshStandardMaterial({
-  color: 0x2a3a5a,
-  emissive: 0x1a2a4a,
-  emissiveIntensity: 0.35,
-  metalness: 0.4,
-  roughness: 0.55,
-});
-
-const dummy = new THREE.Object3D();
-const tmpColor = new THREE.Color();
-
-const bodyMesh = new THREE.InstancedMesh(voxelGeo, bodyMat, bodyVoxels.length);
-bodyMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(bodyVoxels.length * 3), 3);
-
-for (let i = 0; i < bodyVoxels.length; i++) {
-  const [x, y, z] = bodyVoxels[i];
-  dummy.position.set(x, y, z);
-  const scale = 0.88 + Math.random() * 0.18;
-  dummy.scale.setScalar(scale);
-  dummy.rotation.set(0, 0, 0);
-  dummy.updateMatrix();
-  bodyMesh.setMatrixAt(i, dummy.matrix);
-
-  // Gradient: head bluer, feet warmer
-  const tNorm = (y + 2.2) / 5.4;
-  const hue = 0.58 + (1 - tNorm) * 0.04;
-  const sat = 0.25 + Math.random() * 0.12;
-  const lum = 0.20 + Math.random() * 0.12 + tNorm * 0.05;
-  tmpColor.setHSL(hue, sat, lum);
-  bodyMesh.setColorAt(i, tmpColor);
+// Soft dot texture for the point cloud
+function makeDotTexture() {
+  const c = document.createElement('canvas');
+  c.width = 64; c.height = 64;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0.0, 'rgba(255,255,255,1.0)');
+  g.addColorStop(0.25, 'rgba(255,255,255,0.85)');
+  g.addColorStop(0.55, 'rgba(255,255,255,0.25)');
+  g.addColorStop(1.0, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 64);
+  const tex = new THREE.CanvasTexture(c);
+  tex.needsUpdate = true;
+  return tex;
 }
-bodyMesh.instanceMatrix.needsUpdate = true;
-if (bodyMesh.instanceColor) bodyMesh.instanceColor.needsUpdate = true;
-scene.add(bodyMesh);
+const dotTex = makeDotTexture();
 
-// Organ meshes
+// Rotating body group so labels can be anchored in world space and follow the body
+const bodyGroup = new THREE.Group();
+scene.add(bodyGroup);
+
+// Body point cloud — white/blue-tinted with stochastic alpha per point
+{
+  const N = bodyVoxels.length;
+  const positions = new Float32Array(N * 3);
+  const colors = new Float32Array(N * 3);
+  const sizes = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    const [x, y, z] = bodyVoxels[i];
+    positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z;
+    // Mostly white with slight cool tint, occasional brighter point
+    const warm = Math.random();
+    const r = 0.78 + warm * 0.22;
+    const g = 0.86 + warm * 0.14;
+    const b = 0.96 + warm * 0.04;
+    colors[i * 3] = r; colors[i * 3 + 1] = g; colors[i * 3 + 2] = b;
+    sizes[i] = POINT_SIZE * (0.5 + Math.random() * 0.8);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+
+  const bodyMat = new THREE.ShaderMaterial({
+    uniforms: {
+      uMap: { value: dotTex },
+      uOpacity: { value: 0.55 },
+      uPixelRatio: { value: renderer.getPixelRatio() },
+    },
+    vertexShader: `
+      attribute float aSize;
+      varying vec3 vColor;
+      uniform float uPixelRatio;
+      void main() {
+        vColor = color;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mv;
+        gl_PointSize = aSize * 300.0 * uPixelRatio / -mv.z;
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D uMap;
+      uniform float uOpacity;
+      varying vec3 vColor;
+      void main() {
+        vec4 t = texture2D(uMap, gl_PointCoord);
+        if (t.a < 0.02) discard;
+        gl_FragColor = vec4(vColor, t.a * uOpacity);
+      }
+    `,
+    vertexColors: true,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+
+  const bodyPoints = new THREE.Points(geo, bodyMat);
+  bodyGroup.add(bodyPoints);
+}
+
+// Organ point clouds — colored, brighter, slightly larger points
 const organMeshes = {};
 const organCenters = {};
 
@@ -250,33 +308,60 @@ for (const [name, props] of Object.entries(ORGANS)) {
   const voxels = organVoxelsByName[name];
   if (!voxels.length) continue;
 
-  const mat = new THREE.MeshStandardMaterial({
-    color: props.color,
-    emissive: props.color,
-    emissiveIntensity: props.intensity,
-    metalness: 0.15,
-    roughness: 0.35,
-  });
-  const mesh = new THREE.InstancedMesh(voxelGeo, mat, voxels.length);
+  const N = voxels.length;
+  const positions = new Float32Array(N * 3);
+  const sizes = new Float32Array(N);
   let cx = 0, cy = 0, cz = 0;
-  for (let i = 0; i < voxels.length; i++) {
+  for (let i = 0; i < N; i++) {
     const [x, y, z] = voxels[i];
-    dummy.position.set(x, y, z);
-    dummy.scale.setScalar(0.92 + Math.random() * 0.12);
-    dummy.rotation.set(0, 0, 0);
-    dummy.updateMatrix();
-    mesh.setMatrixAt(i, dummy.matrix);
+    positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z;
+    sizes[i] = ORGAN_POINT_SIZE * (0.7 + Math.random() * 0.7);
     cx += x; cy += y; cz += z;
   }
-  mesh.instanceMatrix.needsUpdate = true;
-  scene.add(mesh);
-  organMeshes[name] = mesh;
-  organCenters[name] = [cx / voxels.length, cy / voxels.length, cz / voxels.length];
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
 
-  // Inner point light
-  const light = new THREE.PointLight(props.color, 0.6, 1.4, 2);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uMap: { value: dotTex },
+      uColor: { value: new THREE.Color(props.color) },
+      uIntensity: { value: props.intensity },
+      uPixelRatio: { value: renderer.getPixelRatio() },
+    },
+    vertexShader: `
+      attribute float aSize;
+      uniform float uPixelRatio;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mv;
+        gl_PointSize = aSize * 320.0 * uPixelRatio / -mv.z;
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D uMap;
+      uniform vec3 uColor;
+      uniform float uIntensity;
+      void main() {
+        vec4 t = texture2D(uMap, gl_PointCoord);
+        if (t.a < 0.02) discard;
+        gl_FragColor = vec4(uColor * uIntensity, t.a * 0.85);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+
+  const points = new THREE.Points(geo, mat);
+  bodyGroup.add(points);
+  organMeshes[name] = points;
+  organCenters[name] = [cx / N, cy / N, cz / N];
+
+  // Inner point light (also follows the rotating body)
+  const light = new THREE.PointLight(props.color, 0.55, 1.4, 2);
   light.position.set(...organCenters[name]);
-  scene.add(light);
+  bodyGroup.add(light);
 }
 
 // Outline ring + halo at base
@@ -370,7 +455,7 @@ scene.add(scanPlane);
 // Post-processing
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
-const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.55, 0.45, 0.35);
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.45, 0.35, 0.5);
 composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
 
@@ -481,53 +566,53 @@ function animate() {
 
   controls.update();
 
+  // Continuous slow rotation of the body group
+  bodyGroup.rotation.y = t * 0.18;
+
   // Scan plane sweep
   const scanY = -2.0 + ((t * 0.5) % 5.2);
   scanPlane.position.y = scanY;
   scanPlane.position.x = 0; scanPlane.position.z = 0;
 
-  // Organ breathing pulse
+  // Organ breathing pulse via shader uniform
   for (const [name, mesh] of Object.entries(organMeshes)) {
     const seed = name.charCodeAt(0) * 0.03;
-    const pulse = 1.0 + Math.sin(t * 1.8 + seed) * 0.18;
-    mesh.material.emissiveIntensity = ORGANS[name].intensity * pulse;
+    const pulse = 1.0 + Math.sin(t * 1.8 + seed) * 0.22;
+    mesh.material.uniforms.uIntensity.value = ORGANS[name].intensity * pulse;
   }
 
   // Heart special — extra throb
   if (organMeshes.heart) {
-    const beat = Math.pow(Math.max(0, Math.sin(t * 4.5)), 6) * 0.8 + 1.0;
-    organMeshes.heart.material.emissiveIntensity = ORGANS.heart.intensity * beat;
+    const beat = Math.pow(Math.max(0, Math.sin(t * 4.2)), 6) * 0.9 + 1.0;
+    organMeshes.heart.material.uniforms.uIntensity.value = ORGANS.heart.intensity * beat;
   }
 
   // Ring rotation
   ring.rotation.z = t * 0.1;
   ring2.rotation.z = -t * 0.06;
 
-  // Update labels
+  // Update labels — both label and anchor live in body-group space, so they orbit with the body.
+  bodyGroup.updateMatrixWorld();
   for (const item of labelElements) {
     const { div, linePath, dotOuter, dotInner, data } = item;
 
-    // Label world position (absolute)
+    // Label world position (attached to rotating body group)
     v3a.set(data.labelPos[0], data.labelPos[1], data.labelPos[2]);
+    v3a.applyMatrix4(bodyGroup.matrixWorld);
+    const labelWorldZ = v3a.z;
     v3a.project(camera);
     const labelX = (v3a.x + 1) * window.innerWidth / 2;
     const labelY = (-v3a.y + 1) * window.innerHeight / 2;
 
-    // Anchor world position
+    // Anchor world position (also attached to rotating body group)
     v3b.set(data.anchor[0], data.anchor[1], data.anchor[2]);
+    v3b.applyMatrix4(bodyGroup.matrixWorld);
     v3b.project(camera);
     const anchorX = (v3b.x + 1) * window.innerWidth / 2;
     const anchorY = (-v3b.y + 1) * window.innerHeight / 2;
 
-    // Visibility: full when label is in front of or beside the body, fade only when rotated behind.
-    const offsetVec = new THREE.Vector3(
-      data.labelPos[0] - data.anchor[0],
-      data.labelPos[1] - data.anchor[1],
-      data.labelPos[2] - data.anchor[2],
-    ).normalize();
-    const toCam = camera.position.clone().sub(new THREE.Vector3(...data.anchor)).normalize();
-    const facing = offsetVec.dot(toCam);
-    const visibility = Math.max(0, Math.min(1, (facing + 0.7) * 1.6));
+    // Visibility: fade as label orbits behind the body (labelWorldZ < 0 means behind body axis).
+    const visibility = Math.max(0, Math.min(1, (labelWorldZ + 0.6) * 1.6));
 
     div.style.left = labelX + 'px';
     div.style.top = labelY + 'px';
