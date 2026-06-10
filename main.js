@@ -8,100 +8,133 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 // CSS multiply (no bloom).
 // ============================================================
 
-const SPACING = 0.052;
+// ============================================================
+// High-fidelity anatomical body via smooth-blended SDF.
+// Smooth-min (smin) fuses primitives into one continuous organic
+// form (no glued-ball look); the surface is sampled on a fine grid,
+// each sample snapped onto the true surface, with exact gradient
+// normals. Female proportions to match the Neko reference scans.
+// Body faces +Z; +X is the body's left.
+// ============================================================
+const SP = 0.0295;
 
-// ---------- geometry helpers ----------
-const sq = (x) => x * x;
-function insideSphere(x, y, z, cx, cy, cz, r) { return sq(x-cx)+sq(y-cy)+sq(z-cz) < sq(r); }
-function insideEllipsoid(x, y, z, cx, cy, cz, rx, ry, rz) { return sq((x-cx)/rx)+sq((y-cy)/ry)+sq((z-cz)/rz) < 1; }
-function insideCyl(x, y, z, ax, ay, az, bx, by, bz, r) {
-  const dx=bx-ax, dy=by-ay, dz=bz-az;
-  const lenSq=dx*dx+dy*dy+dz*dz;
-  const t=((x-ax)*dx+(y-ay)*dy+(z-az)*dz)/lenSq;
-  if (t<0 || t>1) return false;
-  const px=ax+t*dx, py=ay+t*dy, pz=az+t*dz;
-  return sq(x-px)+sq(y-py)+sq(z-pz) < sq(r);
+// ---- signed-distance primitives (negative = inside) ----
+function sdSphere(px, py, pz, cx, cy, cz, r) {
+  return Math.hypot(px - cx, py - cy, pz - cz) - r;
+}
+// iq's ellipsoid approximation (smooth, good gradient)
+function sdEllipsoid(px, py, pz, cx, cy, cz, rx, ry, rz) {
+  const dx = (px - cx), dy = (py - cy), dz = (pz - cz);
+  const k0 = Math.hypot(dx / rx, dy / ry, dz / rz);
+  if (k0 === 0) return -Math.min(rx, ry, rz);
+  const k1 = Math.hypot(dx / (rx * rx), dy / (ry * ry), dz / (rz * rz));
+  return k0 * (k0 - 1.0) / k1;
+}
+// linearly tapered capsule (round cone) a(r1) -> b(r2)
+function sdTaper(px, py, pz, ax, ay, az, bx, by, bz, r1, r2) {
+  const bax = bx - ax, bay = by - ay, baz = bz - az;
+  const l2 = bax * bax + bay * bay + baz * baz;
+  const pax = px - ax, pay = py - ay, paz = pz - az;
+  let h = (pax * bax + pay * bay + paz * baz) / l2;
+  h = h < 0 ? 0 : h > 1 ? 1 : h;
+  const cx = pax - bax * h, cy = pay - bay * h, cz = paz - baz * h;
+  return Math.hypot(cx, cy, cz) - (r1 + (r2 - r1) * h);
+}
+// cubic smooth-min
+function smin(a, b, k) {
+  const h = Math.max(k - Math.abs(a - b), 0) / k;
+  return Math.min(a, b) - h * h * h * k * (1 / 6);
 }
 
-// ---------- body silhouette (front-facing +Z, +X = body's left) ----------
-function isBody(x, y, z) {
-  if (insideEllipsoid(x, y, z, 0, 2.62, -0.02, 0.40, 0.50, 0.42)) return true;   // head
-  if (insideEllipsoid(x, y, z, 0, 2.13, 0.02, 0.16, 0.16, 0.15)) return true;    // neck
-  if (insideEllipsoid(x, y, z, 0, 1.92, 0, 0.66, 0.12, 0.22)) return true;       // shoulder yoke
-  if (insideEllipsoid(x, y, z, 0, 1.45, 0, 0.50, 0.55, 0.26)) return true;       // chest
-  if (insideEllipsoid(x, y, z, 0, 0.78, 0, 0.40, 0.22, 0.22)) return true;       // waist
-  if (insideEllipsoid(x, y, z, 0, 0.42, 0, 0.48, 0.28, 0.26)) return true;       // pelvis
-  if (insideSphere(x, y, z, -0.60, 1.88, 0, 0.20)) return true;                  // shoulders
-  if (insideSphere(x, y, z,  0.60, 1.88, 0, 0.20)) return true;
-  if (insideCyl(x, y, z, -0.62, 1.85, 0, -0.80, 0.92, 0.04, 0.135)) return true; // upper arms
-  if (insideCyl(x, y, z,  0.62, 1.85, 0,  0.80, 0.92, 0.04, 0.135)) return true;
-  if (insideSphere(x, y, z, -0.80, 0.92, 0.04, 0.125)) return true;              // elbows
-  if (insideSphere(x, y, z,  0.80, 0.92, 0.04, 0.125)) return true;
-  if (insideCyl(x, y, z, -0.80, 0.92, 0.04, -0.90, 0.05, 0.05, 0.11)) return true; // forearms
-  if (insideCyl(x, y, z,  0.80, 0.92, 0.04,  0.90, 0.05, 0.05, 0.11)) return true;
-  if (insideEllipsoid(x, y, z, -0.92, -0.12, 0.05, 0.09, 0.17, 0.07)) return true; // hands
-  if (insideEllipsoid(x, y, z,  0.92, -0.12, 0.05, 0.09, 0.17, 0.07)) return true;
-  if (insideSphere(x, y, z, -0.28, 0.25, 0, 0.19)) return true;                  // hips
-  if (insideSphere(x, y, z,  0.28, 0.25, 0, 0.19)) return true;
-  if (insideCyl(x, y, z, -0.27, 0.20, 0, -0.32, -0.95, 0, 0.185)) return true;   // thighs
-  if (insideCyl(x, y, z,  0.27, 0.20, 0,  0.32, -0.95, 0, 0.185)) return true;
-  if (insideSphere(x, y, z, -0.32, -0.95, 0, 0.165)) return true;                // knees
-  if (insideSphere(x, y, z,  0.32, -0.95, 0, 0.165)) return true;
-  if (insideCyl(x, y, z, -0.32, -0.95, 0, -0.34, -1.95, 0, 0.14)) return true;   // shins
-  if (insideCyl(x, y, z,  0.32, -0.95, 0,  0.34, -1.95, 0, 0.14)) return true;
-  if (insideEllipsoid(x, y, z, -0.34, -2.05, 0.10, 0.12, 0.10, 0.20)) return true; // feet
-  if (insideEllipsoid(x, y, z,  0.34, -2.05, 0.10, 0.12, 0.10, 0.20)) return true;
-  return false;
+function sdfBody(x, y, z) {
+  const ax = Math.abs(x);
+
+  // ---- TORSO (centered, symmetric) ----
+  let torso = sdEllipsoid(x, y, z, 0, 1.55, 0.0, 0.385, 0.34, 0.215);   // ribcage / chest
+  torso = smin(torso, sdEllipsoid(x, y, z, 0, 1.18, 0.01, 0.32, 0.22, 0.19), 0.16); // solar plexus
+  torso = smin(torso, sdEllipsoid(x, y, z, 0, 0.93, 0.02, 0.275, 0.20, 0.185), 0.16); // waist (narrow)
+  torso = smin(torso, sdEllipsoid(x, y, z, 0, 0.70, 0.05, 0.30, 0.20, 0.185), 0.14);  // lower belly
+  torso = smin(torso, sdEllipsoid(x, y, z, 0, 0.42, 0.0, 0.40, 0.255, 0.235), 0.17);  // pelvis / hips (wide)
+  torso = smin(torso, sdEllipsoid(x, y, z, 0, 0.33, -0.14, 0.37, 0.22, 0.20), 0.12);  // glutes (back)
+  // navel dimple (subtract a tiny sphere)
+  torso = Math.max(torso, -(sdSphere(x, y, z, 0, 0.74, 0.18, 0.035)));
+  // bust (subtle, female) — mirrored via ax
+  torso = smin(torso, sdEllipsoid(ax, y, z, 0.135, 1.45, 0.16, 0.135, 0.115, 0.12), 0.09);
+
+  // ---- NECK + HEAD ----
+  let head = sdEllipsoid(x, y, z, 0, 2.53, -0.02, 0.285, 0.36, 0.32);    // cranium
+  head = smin(head, sdEllipsoid(x, y, z, 0, 2.33, 0.07, 0.22, 0.195, 0.245), 0.10); // jaw / chin
+  head = smin(head, sdSphere(x, y, z, 0, 2.44, 0.19, 0.065), 0.16);      // brow / face front
+  let upper = smin(torso, sdTaper(x, y, z, 0, 1.98, 0.0, 0, 2.24, 0.0, 0.115, 0.105), 0.10); // neck
+  upper = smin(upper, head, 0.085);
+  // trapezius slope from neck out to deltoids
+  upper = smin(upper, sdTaper(ax, y, z, 0.04, 1.92, 0.0, 0.40, 1.78, 0.0, 0.15, 0.15), 0.13);
+
+  // ---- ARMS (mirrored via ax), hanging slightly out ----
+  let arm = sdSphere(ax, y, z, 0.435, 1.74, 0.0, 0.155);                 // deltoid cap
+  arm = smin(arm, sdTaper(ax, y, z, 0.45, 1.72, 0.0, 0.54, 1.05, 0.03, 0.13, 0.092), 0.07);  // upper arm
+  arm = smin(arm, sdSphere(ax, y, z, 0.55, 1.02, 0.03, 0.088), 0.05);    // elbow
+  arm = smin(arm, sdTaper(ax, y, z, 0.55, 1.02, 0.03, 0.625, 0.42, 0.07, 0.088, 0.058), 0.06); // forearm
+  arm = smin(arm, sdEllipsoid(ax, y, z, 0.655, 0.30, 0.075, 0.058, 0.105, 0.038), 0.05); // wrist→hand
+  arm = smin(arm, sdEllipsoid(ax, y, z, 0.66, 0.16, 0.08, 0.062, 0.10, 0.042), 0.04);    // hand/fingers
+
+  // ---- LEGS (mirrored via ax) ----
+  let leg = sdTaper(ax, y, z, 0.185, 0.32, 0.0, 0.205, -0.86, 0.0, 0.175, 0.098);  // thigh → knee
+  leg = smin(leg, sdEllipsoid(ax, y, z, 0.19, 0.05, 0.04, 0.155, 0.30, 0.155), 0.12); // quad volume
+  leg = smin(leg, sdSphere(ax, y, z, 0.207, -0.89, 0.02, 0.10), 0.05);             // knee
+  leg = smin(leg, sdTaper(ax, y, z, 0.207, -0.89, 0.0, 0.225, -1.92, 0.0, 0.10, 0.06), 0.06); // shin → ankle
+  leg = smin(leg, sdEllipsoid(ax, y, z, 0.20, -1.24, -0.05, 0.082, 0.18, 0.10), 0.10); // calf (back)
+  leg = smin(leg, sdEllipsoid(ax, y, z, 0.225, -2.0, 0.11, 0.083, 0.072, 0.205), 0.05); // foot
+
+  // ---- combine (arms/legs join torso, left & right stay separate) ----
+  let d = smin(upper, arm, 0.085);
+  d = smin(d, leg, 0.11);
+  return d;
 }
 
-// ---------- build regular surface lattice ----------
-const insideSet = new Set();
-const keyOf = (xi, yi, zi) => `${xi},${yi},${zi}`;
-const xMin=-1.08, xMax=1.08, yMin=-2.25, yMax=3.2, zMin=-0.5, zMax=0.5;
-
-for (let xi=Math.floor(xMin/SPACING); xi<=Math.ceil(xMax/SPACING); xi++)
-  for (let yi=Math.floor(yMin/SPACING); yi<=Math.ceil(yMax/SPACING); yi++)
-    for (let zi=Math.floor(zMin/SPACING); zi<=Math.ceil(zMax/SPACING); zi++)
-      if (isBody(xi*SPACING, yi*SPACING, zi*SPACING)) insideSet.add(keyOf(xi, yi, zi));
-
-const neighborOffsets = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
-
-// outward normal via numeric gradient of occupancy (smoothed), fallback radial-from-axis
-function bodyNormal(x, y, z) {
-  const h = SPACING * 0.85;
-  let nx=0, ny=0, nz=0;
-  // 6-axis central differences on the continuous isBody field
-  nx = (isBody(x-h,y,z)?1:0) - (isBody(x+h,y,z)?1:0);
-  ny = (isBody(x,y-h,z)?1:0) - (isBody(x,y+h,z)?1:0);
-  nz = (isBody(x,y,z-h)?1:0) - (isBody(x,y,z+h)?1:0);
-  // add diagonal samples for smoother normals
-  const d = h;
-  const dirs = [[1,1,0],[-1,1,0],[1,-1,0],[-1,-1,0],[1,0,1],[-1,0,1],[1,0,-1],[-1,0,-1],[0,1,1],[0,-1,1],[0,1,-1],[0,-1,-1]];
-  for (const [ox,oy,oz] of dirs) {
-    if (!isBody(x+ox*d, y+oy*d, z+oz*d)) { nx -= ox; ny -= oy; nz -= oz; }
-  }
-  let len = Math.hypot(nx, ny, nz);
-  if (len < 1e-4) { // fallback: radial from central axis
-    nx = x; ny = 0; nz = z; len = Math.hypot(nx, ny, nz) || 1;
-  }
-  return [nx/len, ny/len, nz/len];
+function sdfNormal(x, y, z) {
+  const e = 0.010;
+  const dx = sdfBody(x + e, y, z) - sdfBody(x - e, y, z);
+  const dy = sdfBody(x, y + e, z) - sdfBody(x, y - e, z);
+  const dz = sdfBody(x, y, z + e) - sdfBody(x, y, z - e);
+  const l = Math.hypot(dx, dy, dz) || 1;
+  return [dx / l, dy / l, dz / l]; // sdf grows outward → gradient points out
 }
+
+// ---------- sample the surface on a fine grid ----------
+const xs = Math.floor(-0.95 / SP), xe = Math.ceil(0.95 / SP);
+const ys = Math.floor(-2.16 / SP), ye = Math.ceil(2.98 / SP);
+const zs = Math.floor(-0.46 / SP), ze = Math.ceil(0.46 / SP);
+const NX = xe - xs + 1, NY = ye - ys + 1, NZ = ze - zs + 1;
+const gIdx = (i, j, k) => (i * NY + j) * NZ + k;
+const inside = new Uint8Array(NX * NY * NZ);
+
+for (let i = 0; i < NX; i++)
+  for (let j = 0; j < NY; j++)
+    for (let k = 0; k < NZ; k++)
+      if (sdfBody((xs + i) * SP, (ys + j) * SP, (zs + k) * SP) < 0) inside[gIdx(i, j, k)] = 1;
 
 const positions = [];
 const normals = [];
-for (const k of insideSet) {
-  const [xi, yi, zi] = k.split(',').map(Number);
-  // surface only (any empty 6-neighbor)
-  let surface = false;
-  for (const [dx,dy,dz] of neighborOffsets) {
-    if (!insideSet.has(keyOf(xi+dx, yi+dy, zi+dz))) { surface = true; break; }
-  }
-  if (!surface) continue;
-  const x=xi*SPACING, y=yi*SPACING, z=zi*SPACING;
-  positions.push(x, y, z);
-  const n = bodyNormal(x, y, z);
-  normals.push(n[0], n[1], n[2]);
-}
+const sizes = [];
+for (let i = 1; i < NX - 1; i++)
+  for (let j = 1; j < NY - 1; j++)
+    for (let k = 1; k < NZ - 1; k++) {
+      if (!inside[gIdx(i, j, k)]) continue;
+      // surface = inside cell with at least one empty 6-neighbor
+      if (inside[gIdx(i-1,j,k)] && inside[gIdx(i+1,j,k)] &&
+          inside[gIdx(i,j-1,k)] && inside[gIdx(i,j+1,k)] &&
+          inside[gIdx(i,j,k-1)] && inside[gIdx(i,j,k+1)]) continue;
+      const x = (xs + i) * SP, y = (ys + j) * SP, z = (zs + k) * SP;
+      // snap onto the true surface along the gradient
+      const sd = sdfBody(x, y, z);
+      let n = sdfNormal(x, y, z);
+      const px = x - sd * n[0], py = y - sd * n[1], pz = z - sd * n[2];
+      n = sdfNormal(px, py, pz);
+      positions.push(px, py, pz);
+      normals.push(n[0], n[1], n[2]);
+      sizes.push(0.8 + Math.random() * 0.45);
+    }
 const POINT_COUNT = positions.length / 3;
 
 // ============================================================
@@ -111,7 +144,7 @@ const container = document.getElementById('canvas-wrap');
 const scene = new THREE.Scene();
 
 const camera = new THREE.PerspectiveCamera(34, window.innerWidth/window.innerHeight, 0.1, 100);
-camera.position.set(0, 0.5, 10.6);
+camera.position.set(0, 0.48, 11.1);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, premultipliedAlpha: false });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -121,12 +154,12 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 container.appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 0.42, 0);
+controls.target.set(0, 0.43, 0);
 controls.enableDamping = true;
 controls.dampingFactor = 0.07;
 controls.enablePan = false;
-controls.minDistance = 7.5;
-controls.maxDistance = 14.0;
+controls.minDistance = 8.0;
+controls.maxDistance = 15.0;
 controls.minPolarAngle = Math.PI * 0.32;
 controls.maxPolarAngle = Math.PI * 0.62;
 controls.enableZoom = true;
@@ -139,6 +172,7 @@ scene.add(bodyGroup);
 const geo = new THREE.BufferGeometry();
 geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
 geo.setAttribute('aNormal', new THREE.Float32BufferAttribute(normals, 3));
+geo.setAttribute('aSize', new THREE.Float32BufferAttribute(sizes, 1));
 
 const bodyMat = new THREE.ShaderMaterial({
   transparent: true,
@@ -146,19 +180,20 @@ const bodyMat = new THREE.ShaderMaterial({
   depthTest: true,
   blending: THREE.NormalBlending,
   uniforms: {
-    uBaseSize:   { value: 0.095 },
+    uBaseSize:   { value: 0.058 },
     uScale:      { value: renderer.domElement.height * 0.5 },
     uPixelRatio: { value: renderer.getPixelRatio() },
-    uNear:       { value: 9.7 },
-    uFar:        { value: 11.7 },
-    uBlueNear:   { value: new THREE.Color(0.10, 0.28, 0.50) },  // deep cobalt, near rows
-    uBlueFar:    { value: new THREE.Color(0.62, 0.72, 0.82) },  // pale dusty, far rows
-    uNearAlpha:  { value: 0.92 },
-    uFarAlpha:   { value: 0.14 },
-    uLightDir:   { value: new THREE.Vector3(0.25, 0.7, 0.66).normalize() },
+    uNear:       { value: 10.4 },
+    uFar:        { value: 12.4 },
+    uBlueNear:   { value: new THREE.Color(0.08, 0.25, 0.47) },  // deep cobalt, near rows
+    uBlueFar:    { value: new THREE.Color(0.60, 0.70, 0.81) },  // pale dusty, far rows
+    uNearAlpha:  { value: 0.95 },
+    uFarAlpha:   { value: 0.11 },
+    uLightDir:   { value: new THREE.Vector3(0.28, 0.66, 0.70).normalize() },
   },
   vertexShader: /* glsl */`
     attribute vec3 aNormal;
+    attribute float aSize;
     varying float vDepth;
     varying vec3 vViewNormal;
     uniform float uBaseSize, uScale, uPixelRatio, uNear, uFar;
@@ -166,9 +201,9 @@ const bodyMat = new THREE.ShaderMaterial({
       vec4 mv = modelViewMatrix * vec4(position, 1.0);
       vViewNormal = normalize(normalMatrix * aNormal);
       vDepth = clamp((-mv.z - uNear) / (uFar - uNear), 0.0, 1.0);
-      float size = uBaseSize * (uScale / -mv.z);
-      size *= mix(1.0, 0.62, vDepth);
-      gl_PointSize = clamp(size * uPixelRatio, 1.0, 16.0);
+      float size = uBaseSize * aSize * (uScale / -mv.z);
+      size *= mix(1.0, 0.6, vDepth);
+      gl_PointSize = clamp(size * uPixelRatio, 1.0, 12.0);
       gl_Position = projectionMatrix * mv;
     }
   `,
