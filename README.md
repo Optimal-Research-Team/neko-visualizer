@@ -4,7 +4,7 @@ A **Neko Health–style** preventive-health scan interface: a glowing blue **hal
 
 Built with **vanilla Three.js** — no build step, no framework.
 
-![Full Body Scan](docs/preview.png)
+**Live:** https://optimal-research-team.github.io/neko-visualizer/
 
 ## Design language
 
