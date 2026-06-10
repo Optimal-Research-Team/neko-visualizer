@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Optimal · Biometric Twin</title>
-<link rel="stylesheet" href="style.css">
+<title>Optimal · Full Body Scan</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300..500&family=IBM+Plex+Sans:wght@300;400;500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
 <script type="importmap">
 {
   "imports": {
@@ -19,76 +19,74 @@
 </head>
 <body>
 <div id="app">
-  <div id="bg-grid"></div>
+  <!-- soft blue scan-field glow behind the transparent canvas (multiply, no white blowout) -->
+  <div id="scan-glow"></div>
   <div id="canvas-wrap"></div>
   <svg id="leaders" xmlns="http://www.w3.org/2000/svg"></svg>
   <div id="labels"></div>
 
-  <header id="hud">
-    <div class="brand">
-      <div class="brand-mark">
-        <svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 2 L22 8 L22 16 L12 22 L2 16 L2 8 Z" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>
-      </div>
-      <div class="brand-text">
-        <div class="brand-title">OPTIMAL · BIOMETRIC TWIN</div>
-        <div class="brand-sub">Patient #84210 · Session 2026.05.15 · 09:42 EST</div>
-      </div>
+  <!-- minimal top bar -->
+  <header id="topbar">
+    <div class="logo">
+      <span class="logo-mark">◍</span>
+      <span class="logo-word">optimal</span>
     </div>
-
-    <nav class="tabs">
-      <button class="tab active">Composite</button>
-      <button class="tab">Cardio</button>
-      <button class="tab">Metabolic</button>
-      <button class="tab">Hormonal</button>
-      <button class="tab">Inflammation</button>
-    </nav>
-
-    <div class="status">
-      <div class="status-pill"><span></span>Live Scan · 89%</div>
-      <div class="status-meta">HR 58 · SpO₂ 99 · 36.6°C</div>
+    <div class="topbar-right">
+      <div class="scan-id">FULL BODY SCAN · 2026.06.09</div>
+      <button class="cta">View full report</button>
     </div>
   </header>
 
-  <aside id="sidebar">
-    <div class="side-block">
-      <div class="side-label">BIOMETRIC SCORE</div>
-      <div class="side-score">
+  <!-- bottom-left: identity + group nav -->
+  <section id="identity">
+    <div class="ident-eyebrow">PATIENT</div>
+    <h1 class="ident-name">Jennifer</h1>
+    <div class="ident-sub">33 years · scan #84210</div>
+    <nav class="groups">
+      <button class="group active" data-group="Heart &amp; Circulation">Heart &amp; Circulation</button>
+      <button class="group" data-group="Body">Body</button>
+      <button class="group" data-group="Skin">Skin</button>
+    </nav>
+    <div class="measuring">
+      <span class="measuring-arrow">→</span>
+      <span class="measuring-count" id="measuring-count">7</span>
+      <span class="measuring-label">measuring points</span>
+    </div>
+  </section>
+
+  <!-- right: heart-age gauge + score -->
+  <aside id="summary">
+    <div class="summary-block">
+      <div class="summary-eyebrow" id="gauge-eyebrow">ARTERIAL AGE</div>
+      <div class="gauge">
+        <svg viewBox="0 0 160 160" width="148" height="148">
+          <circle class="gauge-track" cx="80" cy="80" r="66" />
+          <circle class="gauge-arc" id="gauge-arc" cx="80" cy="80" r="66" />
+        </svg>
+        <div class="gauge-center">
+          <div class="gauge-num" id="gauge-num">41</div>
+          <div class="gauge-cap">years</div>
+        </div>
+      </div>
+      <div class="gauge-delta" id="gauge-delta">−3 yrs vs. actual</div>
+    </div>
+    <div class="summary-block score-block">
+      <div class="summary-eyebrow">HEALTH SCORE</div>
+      <div class="score-line">
         <span class="score-num">91</span>
-        <span class="score-out">/ 100</span>
+        <span class="score-out">/100</span>
       </div>
-      <div class="score-bar"><div class="score-fill" style="width:91%"></div></div>
-      <div class="side-trend">+4 vs last quarter</div>
-    </div>
-    <div class="side-block">
-      <div class="side-label">SYSTEMS</div>
-      <div class="system-row"><span>Cardiovascular</span><i class="dot ok"></i><b>96</b></div>
-      <div class="system-row"><span>Metabolic</span><i class="dot ok"></i><b>92</b></div>
-      <div class="system-row"><span>Hepatic</span><i class="dot ok"></i><b>94</b></div>
-      <div class="system-row"><span>Renal</span><i class="dot ok"></i><b>89</b></div>
-      <div class="system-row"><span>Endocrine</span><i class="dot watch"></i><b>78</b></div>
-      <div class="system-row"><span>Neuro</span><i class="dot ok"></i><b>93</b></div>
-      <div class="system-row"><span>Immune</span><i class="dot ok"></i><b>90</b></div>
-    </div>
-    <div class="side-block">
-      <div class="side-label">NEXT ACTION</div>
-      <div class="side-action">
-        <div class="action-title">Optimize Vitamin D</div>
-        <div class="action-body">5,000 IU daily × 12 weeks, recheck in 90 days.</div>
-      </div>
+      <div class="score-rule"><span style="width:91%"></span></div>
     </div>
   </aside>
 
-  <footer id="legend">
-    <div class="legend-items">
-      <div class="legend-item"><span style="background:#7CF5C1; box-shadow: 0 0 8px #7CF5C1"></span>Optimal</div>
-      <div class="legend-item"><span style="background:#F2C57C; box-shadow: 0 0 8px #F2C57C"></span>Monitor</div>
-      <div class="legend-item"><span style="background:#F26B7A; box-shadow: 0 0 8px #F26B7A"></span>Action</div>
-    </div>
-    <div class="legend-cta">DRAG TO ROTATE · SCROLL TO ZOOM</div>
-    <div class="ticker">
-      <span class="ticker-dot"></span>STREAMING · 240Hz · CHANNEL 03 ACTIVE
-    </div>
+  <!-- bottom-right: hint -->
+  <footer id="hint">
+    <span class="hint-dot"></span>
+    <span>Drag to rotate · auto-scan active</span>
   </footer>
+
+  <div id="boot"><div class="boot-ring"></div></div>
 </div>
 <script type="module" src="main.js"></script>
 </body>

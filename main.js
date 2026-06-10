@@ -1,642 +1,448 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
-const SPACING = 0.055;
-const POINT_SIZE = 0.085;
-const ORGAN_POINT_SIZE = 0.11;
+// ============================================================
+// OPTIMAL · Full Body Scan — Neko-style blue halftone body
+// Light background → NormalBlending (NOT additive), inverted
+// depth cue, regular surface lattice, baked normals, glow from
+// CSS multiply (no bloom).
+// ============================================================
 
-// ----- Geometry helpers -----
+const SPACING = 0.052;
+
+// ---------- geometry helpers ----------
 const sq = (x) => x * x;
-
-function insideSphere(x, y, z, cx, cy, cz, r) {
-  return sq(x - cx) + sq(y - cy) + sq(z - cz) < sq(r);
-}
-
-function insideEllipsoid(x, y, z, cx, cy, cz, rx, ry, rz) {
-  return sq((x - cx) / rx) + sq((y - cy) / ry) + sq((z - cz) / rz) < 1;
-}
-
+function insideSphere(x, y, z, cx, cy, cz, r) { return sq(x-cx)+sq(y-cy)+sq(z-cz) < sq(r); }
+function insideEllipsoid(x, y, z, cx, cy, cz, rx, ry, rz) { return sq((x-cx)/rx)+sq((y-cy)/ry)+sq((z-cz)/rz) < 1; }
 function insideCyl(x, y, z, ax, ay, az, bx, by, bz, r) {
-  const dx = bx - ax, dy = by - ay, dz = bz - az;
-  const lenSq = dx * dx + dy * dy + dz * dz;
-  let t = ((x - ax) * dx + (y - ay) * dy + (z - az) * dz) / lenSq;
-  if (t < 0 || t > 1) return false;
-  const px = ax + t * dx, py = ay + t * dy, pz = az + t * dz;
-  return sq(x - px) + sq(y - py) + sq(z - pz) < sq(r);
+  const dx=bx-ax, dy=by-ay, dz=bz-az;
+  const lenSq=dx*dx+dy*dy+dz*dz;
+  const t=((x-ax)*dx+(y-ay)*dy+(z-az)*dz)/lenSq;
+  if (t<0 || t>1) return false;
+  const px=ax+t*dx, py=ay+t*dy, pz=az+t*dz;
+  return sq(x-px)+sq(y-py)+sq(z-pz) < sq(r);
 }
 
-// ----- Body silhouette -----
+// ---------- body silhouette (front-facing +Z, +X = body's left) ----------
 function isBody(x, y, z) {
-  // Head
-  if (insideEllipsoid(x, y, z, 0, 2.62, -0.02, 0.42, 0.5, 0.43)) return true;
-  // Neck
-  if (insideEllipsoid(x, y, z, 0, 2.13, 0.02, 0.17, 0.16, 0.16)) return true;
-  // Trapezius / shoulder yoke
-  if (insideEllipsoid(x, y, z, 0, 1.92, 0, 0.66, 0.12, 0.22)) return true;
-  // Torso - chest + abs
-  if (insideEllipsoid(x, y, z, 0, 1.45, 0, 0.52, 0.55, 0.27)) return true;
-  // Waist taper
-  if (insideEllipsoid(x, y, z, 0, 0.78, 0, 0.42, 0.2, 0.23)) return true;
-  // Pelvis
-  if (insideEllipsoid(x, y, z, 0, 0.42, 0, 0.5, 0.28, 0.27)) return true;
-  // Shoulders
-  if (insideSphere(x, y, z, -0.6, 1.88, 0, 0.21)) return true;
-  if (insideSphere(x, y, z, 0.6, 1.88, 0, 0.21)) return true;
-  // Upper arms
-  if (insideCyl(x, y, z, -0.62, 1.85, 0, -0.78, 0.92, 0.04, 0.14)) return true;
-  if (insideCyl(x, y, z, 0.62, 1.85, 0, 0.78, 0.92, 0.04, 0.14)) return true;
-  // Elbows
-  if (insideSphere(x, y, z, -0.78, 0.92, 0.04, 0.13)) return true;
-  if (insideSphere(x, y, z, 0.78, 0.92, 0.04, 0.13)) return true;
-  // Forearms
-  if (insideCyl(x, y, z, -0.78, 0.92, 0.04, -0.88, 0.05, 0.05, 0.12)) return true;
-  if (insideCyl(x, y, z, 0.78, 0.92, 0.04, 0.88, 0.05, 0.05, 0.12)) return true;
-  // Hands
-  if (insideEllipsoid(x, y, z, -0.9, -0.12, 0.05, 0.1, 0.17, 0.08)) return true;
-  if (insideEllipsoid(x, y, z, 0.9, -0.12, 0.05, 0.1, 0.17, 0.08)) return true;
-  // Hips
-  if (insideSphere(x, y, z, -0.28, 0.25, 0, 0.2)) return true;
-  if (insideSphere(x, y, z, 0.28, 0.25, 0, 0.2)) return true;
-  // Upper legs
-  if (insideCyl(x, y, z, -0.27, 0.2, 0, -0.32, -0.95, 0, 0.2)) return true;
-  if (insideCyl(x, y, z, 0.27, 0.2, 0, 0.32, -0.95, 0, 0.2)) return true;
-  // Knees
-  if (insideSphere(x, y, z, -0.32, -0.95, 0, 0.18)) return true;
-  if (insideSphere(x, y, z, 0.32, -0.95, 0, 0.18)) return true;
-  // Shins
-  if (insideCyl(x, y, z, -0.32, -0.95, 0, -0.34, -1.95, 0, 0.15)) return true;
-  if (insideCyl(x, y, z, 0.32, -0.95, 0, 0.34, -1.95, 0, 0.15)) return true;
-  // Feet
-  if (insideEllipsoid(x, y, z, -0.34, -2.05, 0.1, 0.13, 0.1, 0.2)) return true;
-  if (insideEllipsoid(x, y, z, 0.34, -2.05, 0.1, 0.13, 0.1, 0.2)) return true;
+  if (insideEllipsoid(x, y, z, 0, 2.62, -0.02, 0.40, 0.50, 0.42)) return true;   // head
+  if (insideEllipsoid(x, y, z, 0, 2.13, 0.02, 0.16, 0.16, 0.15)) return true;    // neck
+  if (insideEllipsoid(x, y, z, 0, 1.92, 0, 0.66, 0.12, 0.22)) return true;       // shoulder yoke
+  if (insideEllipsoid(x, y, z, 0, 1.45, 0, 0.50, 0.55, 0.26)) return true;       // chest
+  if (insideEllipsoid(x, y, z, 0, 0.78, 0, 0.40, 0.22, 0.22)) return true;       // waist
+  if (insideEllipsoid(x, y, z, 0, 0.42, 0, 0.48, 0.28, 0.26)) return true;       // pelvis
+  if (insideSphere(x, y, z, -0.60, 1.88, 0, 0.20)) return true;                  // shoulders
+  if (insideSphere(x, y, z,  0.60, 1.88, 0, 0.20)) return true;
+  if (insideCyl(x, y, z, -0.62, 1.85, 0, -0.80, 0.92, 0.04, 0.135)) return true; // upper arms
+  if (insideCyl(x, y, z,  0.62, 1.85, 0,  0.80, 0.92, 0.04, 0.135)) return true;
+  if (insideSphere(x, y, z, -0.80, 0.92, 0.04, 0.125)) return true;              // elbows
+  if (insideSphere(x, y, z,  0.80, 0.92, 0.04, 0.125)) return true;
+  if (insideCyl(x, y, z, -0.80, 0.92, 0.04, -0.90, 0.05, 0.05, 0.11)) return true; // forearms
+  if (insideCyl(x, y, z,  0.80, 0.92, 0.04,  0.90, 0.05, 0.05, 0.11)) return true;
+  if (insideEllipsoid(x, y, z, -0.92, -0.12, 0.05, 0.09, 0.17, 0.07)) return true; // hands
+  if (insideEllipsoid(x, y, z,  0.92, -0.12, 0.05, 0.09, 0.17, 0.07)) return true;
+  if (insideSphere(x, y, z, -0.28, 0.25, 0, 0.19)) return true;                  // hips
+  if (insideSphere(x, y, z,  0.28, 0.25, 0, 0.19)) return true;
+  if (insideCyl(x, y, z, -0.27, 0.20, 0, -0.32, -0.95, 0, 0.185)) return true;   // thighs
+  if (insideCyl(x, y, z,  0.27, 0.20, 0,  0.32, -0.95, 0, 0.185)) return true;
+  if (insideSphere(x, y, z, -0.32, -0.95, 0, 0.165)) return true;                // knees
+  if (insideSphere(x, y, z,  0.32, -0.95, 0, 0.165)) return true;
+  if (insideCyl(x, y, z, -0.32, -0.95, 0, -0.34, -1.95, 0, 0.14)) return true;   // shins
+  if (insideCyl(x, y, z,  0.32, -0.95, 0,  0.34, -1.95, 0, 0.14)) return true;
+  if (insideEllipsoid(x, y, z, -0.34, -2.05, 0.10, 0.12, 0.10, 0.20)) return true; // feet
+  if (insideEllipsoid(x, y, z,  0.34, -2.05, 0.10, 0.12, 0.10, 0.20)) return true;
   return false;
 }
 
-// ----- Organ atlas -----
-const ORGANS = {
-  brain:     { color: 0xB57CFF, intensity: 1.4 },
-  thyroid:   { color: 0xFF8FCB, intensity: 1.2 },
-  heart:     { color: 0xFF5566, intensity: 1.8 },
-  lung:      { color: 0x7CC9FF, intensity: 1.1 },
-  liver:     { color: 0xFFA85B, intensity: 1.3 },
-  stomach:   { color: 0xC4F26B, intensity: 1.0 },
-  pancreas:  { color: 0xFFE45C, intensity: 1.15 },
-  kidney:    { color: 0x7CF5C1, intensity: 1.25 },
-  intestine: { color: 0xE07CFF, intensity: 1.0 },
-};
-
-function getOrgan(x, y, z) {
-  // Brain - inside head
-  if (insideEllipsoid(x, y, z, 0, 2.68, -0.04, 0.32, 0.38, 0.32)) return 'brain';
-  // Thyroid - front of neck
-  if (insideEllipsoid(x, y, z, 0, 2.05, 0.1, 0.1, 0.06, 0.06)) return 'thyroid';
-  // Heart - chest, anatomically slightly left (positive X = body's left, since body faces +Z)
-  if (insideEllipsoid(x, y, z, 0.06, 1.6, 0.04, 0.16, 0.2, 0.14)) return 'heart';
-  // Lungs - flanking heart
-  if (insideEllipsoid(x, y, z, -0.26, 1.6, 0, 0.2, 0.32, 0.18)) return 'lung';
-  if (insideEllipsoid(x, y, z, 0.28, 1.55, -0.02, 0.18, 0.3, 0.17) &&
-      !insideEllipsoid(x, y, z, 0.06, 1.6, 0.04, 0.16, 0.2, 0.14)) return 'lung';
-  // Liver - upper right abdomen (body's right = -X)
-  if (insideEllipsoid(x, y, z, -0.2, 1.05, 0.05, 0.26, 0.2, 0.18)) return 'liver';
-  // Stomach - upper left
-  if (insideEllipsoid(x, y, z, 0.2, 1.0, 0.0, 0.16, 0.16, 0.13)) return 'stomach';
-  // Pancreas - center, behind stomach
-  if (insideEllipsoid(x, y, z, 0.0, 0.88, -0.06, 0.22, 0.06, 0.08)) return 'pancreas';
-  // Kidneys - posterior, sides
-  if (insideEllipsoid(x, y, z, -0.24, 0.78, -0.14, 0.08, 0.16, 0.08)) return 'kidney';
-  if (insideEllipsoid(x, y, z, 0.24, 0.78, -0.14, 0.08, 0.16, 0.08)) return 'kidney';
-  // Intestines
-  if (insideEllipsoid(x, y, z, 0, 0.45, 0.05, 0.35, 0.22, 0.2)) return 'intestine';
-  return null;
-}
-
-// ----- Build voxel sets -----
+// ---------- build regular surface lattice ----------
 const insideSet = new Set();
 const keyOf = (xi, yi, zi) => `${xi},${yi},${zi}`;
+const xMin=-1.08, xMax=1.08, yMin=-2.25, yMax=3.2, zMin=-0.5, zMax=0.5;
 
-const xMin = -1.05, xMax = 1.05;
-const yMin = -2.2, yMax = 3.2;
-const zMin = -0.5, zMax = 0.5;
-
-for (let xi = Math.floor(xMin / SPACING); xi <= Math.ceil(xMax / SPACING); xi++) {
-  for (let yi = Math.floor(yMin / SPACING); yi <= Math.ceil(yMax / SPACING); yi++) {
-    for (let zi = Math.floor(zMin / SPACING); zi <= Math.ceil(zMax / SPACING); zi++) {
-      if (isBody(xi * SPACING, yi * SPACING, zi * SPACING)) insideSet.add(keyOf(xi, yi, zi));
-    }
-  }
-}
-
-const bodyVoxels = [];
-const organVoxelsByName = {};
-for (const o of Object.keys(ORGANS)) organVoxelsByName[o] = [];
+for (let xi=Math.floor(xMin/SPACING); xi<=Math.ceil(xMax/SPACING); xi++)
+  for (let yi=Math.floor(yMin/SPACING); yi<=Math.ceil(yMax/SPACING); yi++)
+    for (let zi=Math.floor(zMin/SPACING); zi<=Math.ceil(zMax/SPACING); zi++)
+      if (isBody(xi*SPACING, yi*SPACING, zi*SPACING)) insideSet.add(keyOf(xi, yi, zi));
 
 const neighborOffsets = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
 
-for (const k of insideSet) {
-  const [xi, yi, zi] = k.split(',').map(Number);
-  const x = xi * SPACING, y = yi * SPACING, z = zi * SPACING;
-
-  const organ = getOrgan(x, y, z);
-  if (organ) {
-    organVoxelsByName[organ].push([x, y, z]);
-    continue;
+// outward normal via numeric gradient of occupancy (smoothed), fallback radial-from-axis
+function bodyNormal(x, y, z) {
+  const h = SPACING * 0.85;
+  let nx=0, ny=0, nz=0;
+  // 6-axis central differences on the continuous isBody field
+  nx = (isBody(x-h,y,z)?1:0) - (isBody(x+h,y,z)?1:0);
+  ny = (isBody(x,y-h,z)?1:0) - (isBody(x,y+h,z)?1:0);
+  nz = (isBody(x,y,z-h)?1:0) - (isBody(x,y,z+h)?1:0);
+  // add diagonal samples for smoother normals
+  const d = h;
+  const dirs = [[1,1,0],[-1,1,0],[1,-1,0],[-1,-1,0],[1,0,1],[-1,0,1],[1,0,-1],[-1,0,-1],[0,1,1],[0,-1,1],[0,1,-1],[0,-1,-1]];
+  for (const [ox,oy,oz] of dirs) {
+    if (!isBody(x+ox*d, y+oy*d, z+oz*d)) { nx -= ox; ny -= oy; nz -= oz; }
   }
-
-  // Surface check: keep voxel if it has any neighbor outside body
-  let isSurface = false;
-  for (const [dx, dy, dz] of neighborOffsets) {
-    if (!insideSet.has(keyOf(xi + dx, yi + dy, zi + dz))) { isSurface = true; break; }
+  let len = Math.hypot(nx, ny, nz);
+  if (len < 1e-4) { // fallback: radial from central axis
+    nx = x; ny = 0; nz = z; len = Math.hypot(nx, ny, nz) || 1;
   }
-  if (!isSurface) continue;
-
-  // Keep ALL surface voxels for a dense fuzzy shell, plus a sparse interior sample
-  // (interior voxels are added in a separate pass below)
-  bodyVoxels.push([x, y, z]);
+  return [nx/len, ny/len, nz/len];
 }
 
-// Sparse interior voxels for body solidity
+const positions = [];
+const normals = [];
 for (const k of insideSet) {
   const [xi, yi, zi] = k.split(',').map(Number);
-  const x = xi * SPACING, y = yi * SPACING, z = zi * SPACING;
-  if (getOrgan(x, y, z)) continue;
-  // Check if this voxel is fully interior (all 6 neighbors inside)
-  let isInterior = true;
-  for (const [dx, dy, dz] of neighborOffsets) {
-    if (!insideSet.has(keyOf(xi + dx, yi + dy, zi + dz))) { isInterior = false; break; }
+  // surface only (any empty 6-neighbor)
+  let surface = false;
+  for (const [dx,dy,dz] of neighborOffsets) {
+    if (!insideSet.has(keyOf(xi+dx, yi+dy, zi+dz))) { surface = true; break; }
   }
-  if (!isInterior) continue;
-  if (Math.random() < 0.12) bodyVoxels.push([x, y, z]);
+  if (!surface) continue;
+  const x=xi*SPACING, y=yi*SPACING, z=zi*SPACING;
+  positions.push(x, y, z);
+  const n = bodyNormal(x, y, z);
+  normals.push(n[0], n[1], n[2]);
 }
+const POINT_COUNT = positions.length / 3;
 
-// ----- Three.js scene -----
+// ============================================================
+// Three.js scene
+// ============================================================
 const container = document.getElementById('canvas-wrap');
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x040810, 0.08);
 
-const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 100);
-camera.position.set(0, 0.5, 7.8);
+const camera = new THREE.PerspectiveCamera(34, window.innerWidth/window.innerHeight, 0.1, 100);
+camera.position.set(0, 0.5, 10.6);
 
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, premultipliedAlpha: false });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setClearColor(0x000000, 0);
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.0;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 container.appendChild(renderer.domElement);
 
-const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 0.5, 0);
+controls.target.set(0, 0.42, 0);
 controls.enableDamping = true;
-controls.dampingFactor = 0.06;
-controls.minDistance = 5.0;
-controls.maxDistance = 10.0;
-controls.minPolarAngle = Math.PI * 0.3;
-controls.maxPolarAngle = Math.PI * 0.65;
+controls.dampingFactor = 0.07;
 controls.enablePan = false;
-controls.autoRotate = false;
+controls.minDistance = 7.5;
+controls.maxDistance = 14.0;
+controls.minPolarAngle = Math.PI * 0.32;
+controls.maxPolarAngle = Math.PI * 0.62;
+controls.enableZoom = true;
 
-// Lights
-scene.add(new THREE.AmbientLight(0x3a4868, 0.5));
-
-const keyLight = new THREE.DirectionalLight(0x9bb5ff, 1.1);
-keyLight.position.set(3, 4, 4);
-scene.add(keyLight);
-
-const rimLight = new THREE.DirectionalLight(0xff7cb5, 0.6);
-rimLight.position.set(-3, 1, -3);
-scene.add(rimLight);
-
-const fillLight = new THREE.DirectionalLight(0x7cf5c1, 0.3);
-fillLight.position.set(0, -2, 3);
-scene.add(fillLight);
-
-// Soft dot texture for the point cloud
-function makeDotTexture() {
-  const c = document.createElement('canvas');
-  c.width = 64; c.height = 64;
-  const ctx = c.getContext('2d');
-  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-  g.addColorStop(0.0, 'rgba(255,255,255,1.0)');
-  g.addColorStop(0.25, 'rgba(255,255,255,0.85)');
-  g.addColorStop(0.55, 'rgba(255,255,255,0.25)');
-  g.addColorStop(1.0, 'rgba(255,255,255,0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 64, 64);
-  const tex = new THREE.CanvasTexture(c);
-  tex.needsUpdate = true;
-  return tex;
-}
-const dotTex = makeDotTexture();
-
-// Rotating body group so labels can be anchored in world space and follow the body
+// rotating body group
 const bodyGroup = new THREE.Group();
 scene.add(bodyGroup);
 
-// Body point cloud — white/blue-tinted with stochastic alpha per point
-{
-  const N = bodyVoxels.length;
-  const positions = new Float32Array(N * 3);
-  const colors = new Float32Array(N * 3);
-  const sizes = new Float32Array(N);
-  for (let i = 0; i < N; i++) {
-    const [x, y, z] = bodyVoxels[i];
-    positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z;
-    // Mostly white with slight cool tint, occasional brighter point
-    const warm = Math.random();
-    const r = 0.78 + warm * 0.22;
-    const g = 0.86 + warm * 0.14;
-    const b = 0.96 + warm * 0.04;
-    colors[i * 3] = r; colors[i * 3 + 1] = g; colors[i * 3 + 2] = b;
-    sizes[i] = POINT_SIZE * (0.5 + Math.random() * 0.8);
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  geo.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+// ---------- halftone point material (NormalBlending) ----------
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+geo.setAttribute('aNormal', new THREE.Float32BufferAttribute(normals, 3));
 
-  const bodyMat = new THREE.ShaderMaterial({
-    uniforms: {
-      uMap: { value: dotTex },
-      uOpacity: { value: 0.55 },
-      uPixelRatio: { value: renderer.getPixelRatio() },
-    },
-    vertexShader: `
-      attribute float aSize;
-      varying vec3 vColor;
-      uniform float uPixelRatio;
-      void main() {
-        vColor = color;
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_Position = projectionMatrix * mv;
-        gl_PointSize = aSize * 300.0 * uPixelRatio / -mv.z;
-      }
-    `,
-    fragmentShader: `
-      uniform sampler2D uMap;
-      uniform float uOpacity;
-      varying vec3 vColor;
-      void main() {
-        vec4 t = texture2D(uMap, gl_PointCoord);
-        if (t.a < 0.02) discard;
-        gl_FragColor = vec4(vColor, t.a * uOpacity);
-      }
-    `,
-    vertexColors: true,
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
-
-  const bodyPoints = new THREE.Points(geo, bodyMat);
-  bodyGroup.add(bodyPoints);
-}
-
-// Organ point clouds — colored, brighter, slightly larger points
-const organMeshes = {};
-const organCenters = {};
-
-for (const [name, props] of Object.entries(ORGANS)) {
-  const voxels = organVoxelsByName[name];
-  if (!voxels.length) continue;
-
-  const N = voxels.length;
-  const positions = new Float32Array(N * 3);
-  const sizes = new Float32Array(N);
-  let cx = 0, cy = 0, cz = 0;
-  for (let i = 0; i < N; i++) {
-    const [x, y, z] = voxels[i];
-    positions[i * 3] = x; positions[i * 3 + 1] = y; positions[i * 3 + 2] = z;
-    sizes[i] = ORGAN_POINT_SIZE * (0.7 + Math.random() * 0.7);
-    cx += x; cy += y; cz += z;
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
-
-  const mat = new THREE.ShaderMaterial({
-    uniforms: {
-      uMap: { value: dotTex },
-      uColor: { value: new THREE.Color(props.color) },
-      uIntensity: { value: props.intensity },
-      uPixelRatio: { value: renderer.getPixelRatio() },
-    },
-    vertexShader: `
-      attribute float aSize;
-      uniform float uPixelRatio;
-      void main() {
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_Position = projectionMatrix * mv;
-        gl_PointSize = aSize * 320.0 * uPixelRatio / -mv.z;
-      }
-    `,
-    fragmentShader: `
-      uniform sampler2D uMap;
-      uniform vec3 uColor;
-      uniform float uIntensity;
-      void main() {
-        vec4 t = texture2D(uMap, gl_PointCoord);
-        if (t.a < 0.02) discard;
-        gl_FragColor = vec4(uColor * uIntensity, t.a * 0.85);
-      }
-    `,
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
-
-  const points = new THREE.Points(geo, mat);
-  bodyGroup.add(points);
-  organMeshes[name] = points;
-  organCenters[name] = [cx / N, cy / N, cz / N];
-
-  // Inner point light (also follows the rotating body)
-  const light = new THREE.PointLight(props.color, 0.55, 1.4, 2);
-  light.position.set(...organCenters[name]);
-  bodyGroup.add(light);
-}
-
-// Outline ring + halo at base
-const ringGeo = new THREE.RingGeometry(1.2, 1.35, 96);
-const ringMat = new THREE.MeshBasicMaterial({
-  color: 0x4fb2ff,
+const bodyMat = new THREE.ShaderMaterial({
   transparent: true,
-  opacity: 0.25,
-  side: THREE.DoubleSide,
-  blending: THREE.AdditiveBlending,
-});
-const ring = new THREE.Mesh(ringGeo, ringMat);
-ring.rotation.x = -Math.PI / 2;
-ring.position.y = -2.15;
-scene.add(ring);
-
-const ring2Mat = new THREE.MeshBasicMaterial({
-  color: 0x7cf5c1, transparent: true, opacity: 0.4, side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
-});
-const ring2 = new THREE.Mesh(new THREE.RingGeometry(1.42, 1.46, 96), ring2Mat);
-ring2.rotation.x = -Math.PI / 2;
-ring2.position.y = -2.15;
-scene.add(ring2);
-
-// Background star particles
-{
-  const N = 240;
-  const positions = new Float32Array(N * 3);
-  for (let i = 0; i < N; i++) {
-    const r = 4 + Math.random() * 6;
-    const theta = Math.random() * Math.PI * 2;
-    const phi = Math.acos(2 * Math.random() - 1);
-    positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-    positions[i * 3 + 1] = r * Math.cos(phi) * 0.6;
-    positions[i * 3 + 2] = r * Math.sin(phi) * Math.sin(theta) - 2;
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  const mat = new THREE.PointsMaterial({
-    size: 0.025, color: 0x6a8acb, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false,
-  });
-  scene.add(new THREE.Points(geo, mat));
-}
-
-// Scan plane (slow horizontal sweep with edge glow)
-const scanMat = new THREE.ShaderMaterial({
-  transparent: true,
-  blending: THREE.AdditiveBlending,
   depthWrite: false,
+  depthTest: true,
+  blending: THREE.NormalBlending,
   uniforms: {
-    uColor: { value: new THREE.Color(0x7cf5c1) },
-    uOpacity: { value: 0.45 },
+    uBaseSize:   { value: 0.095 },
+    uScale:      { value: renderer.domElement.height * 0.5 },
+    uPixelRatio: { value: renderer.getPixelRatio() },
+    uNear:       { value: 9.7 },
+    uFar:        { value: 11.7 },
+    uBlueNear:   { value: new THREE.Color(0.10, 0.28, 0.50) },  // deep cobalt, near rows
+    uBlueFar:    { value: new THREE.Color(0.62, 0.72, 0.82) },  // pale dusty, far rows
+    uNearAlpha:  { value: 0.92 },
+    uFarAlpha:   { value: 0.14 },
+    uLightDir:   { value: new THREE.Vector3(0.25, 0.7, 0.66).normalize() },
   },
-  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-  fragmentShader: `
-    varying vec2 vUv;
-    uniform vec3 uColor;
-    uniform float uOpacity;
+  vertexShader: /* glsl */`
+    attribute vec3 aNormal;
+    varying float vDepth;
+    varying vec3 vViewNormal;
+    uniform float uBaseSize, uScale, uPixelRatio, uNear, uFar;
     void main() {
-      float d = abs(vUv.y - 0.5);
-      float band = smoothstep(0.5, 0.0, d);
-      float pulse = pow(band, 6.0);
-      float radial = smoothstep(0.5, 0.0, length(vUv - 0.5));
-      float a = pulse * radial * uOpacity;
-      gl_FragColor = vec4(uColor, a);
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      vViewNormal = normalize(normalMatrix * aNormal);
+      vDepth = clamp((-mv.z - uNear) / (uFar - uNear), 0.0, 1.0);
+      float size = uBaseSize * (uScale / -mv.z);
+      size *= mix(1.0, 0.62, vDepth);
+      gl_PointSize = clamp(size * uPixelRatio, 1.0, 16.0);
+      gl_Position = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: /* glsl */`
+    varying float vDepth;
+    varying vec3 vViewNormal;
+    uniform vec3 uBlueNear, uBlueFar, uLightDir;
+    uniform float uNearAlpha, uFarAlpha;
+    void main() {
+      vec2 uv = gl_PointCoord - 0.5;
+      float d = length(uv);
+      float mask = smoothstep(0.5, 0.38, d);
+      if (mask < 0.01) discard;
+      vec3 col = mix(uBlueNear, uBlueFar, vDepth);
+      float lit = clamp(dot(normalize(vViewNormal), uLightDir) * 0.5 + 0.5, 0.0, 1.0);
+      col = mix(col * 0.78, col, lit);                 // subtle volumetric shading
+      float facing = abs(vViewNormal.z);               // rim emphasis
+      float a = mix(uNearAlpha, uFarAlpha, vDepth) * mask * mix(1.0, 0.66, facing);
+      gl_FragColor = vec4(col, a);
     }
   `,
 });
-const scanPlane = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 0.12), scanMat);
-scanPlane.rotation.x = -Math.PI / 2;
-scene.add(scanPlane);
 
-// Subtle vertical orbit lines
+const bodyPoints = new THREE.Points(geo, bodyMat);
+bodyGroup.add(bodyPoints);
+
+// ---------- soft contact ellipse at the feet ----------
 {
-  const lineMat = new THREE.LineBasicMaterial({ color: 0x4fb2ff, transparent: true, opacity: 0.18 });
-  for (let i = 0; i < 3; i++) {
-    const pts = [];
-    const radius = 1.35;
-    const tilt = (i - 1) * 0.2;
-    for (let a = 0; a <= Math.PI * 2; a += 0.04) {
-      pts.push(new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius * 0.15 + tilt, Math.sin(a) * radius));
-    }
-    const geo = new THREE.BufferGeometry().setFromPoints(pts);
-    const line = new THREE.LineLoop(geo, lineMat);
-    line.position.y = 0.5;
-    line.rotation.z = (i - 1) * 0.18;
-    scene.add(line);
-  }
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, 'rgba(90,120,170,0.28)');
+  g.addColorStop(1, 'rgba(90,120,170,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 128, 128);
+  const tex = new THREE.CanvasTexture(c);
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, blending: THREE.NormalBlending });
+  const shadow = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 1.1), mat);
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = -2.18;
+  scene.add(shadow);
 }
 
-// Post-processing
-const composer = new EffectComposer(renderer);
-composer.addPass(new RenderPass(scene, camera));
-const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.45, 0.35, 0.5);
-composer.addPass(bloomPass);
-composer.addPass(new OutputPass());
+// ============================================================
+// Biomarker markers (grouped)  — anchor & labelPos in body space
+// ============================================================
+const MARKERS = [
+  // ---- Heart & Circulation ----
+  { g:'Heart & Circulation', name:'ApoB',          value:'78',     unit:'mg/dL', range:'<80 optimal',  status:'optimal', anchor:[0.05,1.62,0.20],  labelPos:[1.42,1.78,0.42] },
+  { g:'Heart & Circulation', name:'Lp(a)',         value:'92',     unit:'nmol/L',range:'<75 optimal',  status:'monitor', anchor:[0.17,1.50,0.18],  labelPos:[1.5,1.18,0.40] },
+  { g:'Heart & Circulation', name:'Resting HR',    value:'62',     unit:'bpm',   range:'50–70 optimal',status:'optimal', anchor:[0.05,1.60,0.19],  labelPos:[-1.42,1.78,0.42] },
+  { g:'Heart & Circulation', name:'hs-CRP',        value:'0.8',    unit:'mg/L',  range:'<1.0 low',     status:'optimal', anchor:[-0.02,1.42,0.21], labelPos:[-1.5,1.18,0.40] },
+  { g:'Heart & Circulation', name:'VO₂ Max',       value:'44',     unit:'mL/kg', range:'≥42 excellent',status:'optimal', anchor:[0.30,1.72,0.14],  labelPos:[1.55,2.34,0.34] },
+  { g:'Heart & Circulation', name:'Blood Pressure',value:'118/76', unit:'mmHg',  range:'<120/80',      status:'optimal', anchor:[-0.40,1.30,0.20], labelPos:[-1.55,0.5,0.40] },
 
-// ----- Biomarker labels -----
-// labelPos is absolute world position; anchor is the point on the body the leader line draws to.
-const BIOMARKERS = [
-  // LEFT column (top → bottom)
-  { name: 'Cortisol',  value: '14.2', unit: 'μg/dL',     organ: 'BRAIN · HPA',        anchor: [-0.1, 2.78, 0.2],  labelPos: [-1.85, 2.05, 0.3], status: 'optimal', range: 0.55, delta: '−6%' },
-  { name: 'TSH',       value: '1.84', unit: 'mIU/L',     organ: 'THYROID',            anchor: [-0.05, 2.1, 0.18], labelPos: [-1.9, 1.4, 0.3], status: 'optimal', range: 0.45, delta: '−2%' },
-  { name: 'hs-CRP',    value: '0.6',  unit: 'mg/L',      organ: 'INFLAMMATION',       anchor: [-0.26, 1.55, 0.2], labelPos: [-1.95, 0.75, 0.3], status: 'optimal', range: 0.2,  delta: '−18%' },
-  { name: 'ALT',       value: '24',   unit: 'U/L',       organ: 'LIVER',              anchor: [-0.2, 1.05, 0.22], labelPos: [-1.95, 0.1, 0.3], status: 'optimal', range: 0.4,  delta: '−1%' },
-  { name: 'eGFR',      value: '96',   unit: 'mL/min',    organ: 'KIDNEY · L',         anchor: [-0.24, 0.78, -0.05], labelPos: [-1.95, -0.55, 0.3], status: 'optimal', range: 0.66, delta: '+1%' },
-  { name: 'Microbiome',value: '7.8',  unit: 'index',     organ: 'GUT · DIVERSITY',    anchor: [-0.1, 0.42, 0.22], labelPos: [-1.9, -1.2, 0.3], status: 'optimal', range: 0.78, delta: '+12%' },
+  // ---- Body ----
+  { g:'Body', name:'HbA1c',          value:'5.4',  unit:'%',      range:'<5.7 optimal',  status:'optimal', anchor:[0.0,0.90,0.18],   labelPos:[1.46,1.02,0.42] },
+  { g:'Body', name:'Fasting Glucose',value:'97',   unit:'mg/dL',  range:'70–99 optimal', status:'monitor', anchor:[0.05,0.84,0.18],  labelPos:[1.52,0.42,0.40] },
+  { g:'Body', name:'ALT',            value:'26',   unit:'U/L',    range:'<30 optimal',   status:'optimal', anchor:[-0.20,1.05,0.20], labelPos:[-1.46,1.18,0.42] },
+  { g:'Body', name:'eGFR',           value:'96',   unit:'mL/min', range:'≥90 optimal',   status:'optimal', anchor:[-0.24,0.78,0.14], labelPos:[-1.5,0.55,0.40] },
+  { g:'Body', name:'TSH',            value:'2.1',  unit:'mIU/L',  range:'0.4–2.5',       status:'optimal', anchor:[0.0,2.05,0.18],   labelPos:[1.5,2.18,0.34] },
+  { g:'Body', name:'Ferritin',       value:'38',   unit:'ng/mL',  range:'30–150',        status:'optimal', anchor:[0.22,1.00,0.18],  labelPos:[1.55,1.58,0.40] },
+  { g:'Body', name:'Vitamin D',      value:'28',   unit:'ng/mL',  range:'40–60 optimal', status:'monitor', anchor:[0.20,0.60,0.16],  labelPos:[1.52,-0.12,0.40] },
+  { g:'Body', name:'Cortisol AM',    value:'18',   unit:'µg/dL',  range:'6–18 (AM)',     status:'high',    anchor:[-0.20,0.60,0.16], labelPos:[-1.5,-0.05,0.40] },
+  { g:'Body', name:'Body Fat',       value:'19',   unit:'%',      range:'11–21 optimal', status:'optimal', anchor:[0.0,0.50,0.24],   labelPos:[-1.46,-0.66,0.40] },
 
-  // RIGHT column (top → bottom)
-  { name: 'BDNF',      value: '28.4', unit: 'ng/mL',     organ: 'BRAIN · NEURO',      anchor: [0.1, 2.7, 0.2],    labelPos: [1.45, 2.05, 0.3], status: 'optimal', range: 0.72, delta: '+11%' },
-  { name: 'VO₂ Max',   value: '52',   unit: 'mL/kg/min', organ: 'LUNGS',              anchor: [0.28, 1.78, 0.18], labelPos: [1.5, 1.4, 0.3], status: 'optimal', range: 0.78, delta: '+4%' },
-  { name: 'ApoB',      value: '78',   unit: 'mg/dL',     organ: 'HEART · LIPIDS',     anchor: [0.08, 1.62, 0.2],  labelPos: [1.55, 0.75, 0.3], status: 'optimal', range: 0.42, delta: '−9%' },
-  { name: 'HbA1c',     value: '5.2',  unit: '%',         organ: 'PANCREAS · GLUCOSE', anchor: [0.05, 0.88, 0.08], labelPos: [1.55, 0.1, 0.3], status: 'optimal', range: 0.38, delta: '−3%' },
-  { name: 'Ferritin',  value: '142',  unit: 'ng/mL',     organ: 'STOMACH · IRON',     anchor: [0.18, 1.0, 0.15],  labelPos: [1.55, -0.55, 0.3], status: 'optimal', range: 0.55, delta: '+8%' },
-  { name: 'Vitamin D', value: '38',   unit: 'ng/mL',     organ: 'ENDOCRINE',          anchor: [0.24, 0.78, -0.05],labelPos: [1.55, -1.2, 0.3], status: 'watch',   range: 0.52, delta: '−5%' },
+  // ---- Skin ----
+  { g:'Skin', name:'Lesion Scan',    value:'0',    unit:'flagged',range:'0 atypical',    status:'optimal', anchor:[0.42,1.78,0.14],  labelPos:[1.5,2.0,0.34] },
+  { g:'Skin', name:'Surface Area',   value:'1.81', unit:'m²',     range:'mapped',        status:'optimal', anchor:[0.18,1.30,0.24],  labelPos:[1.52,1.1,0.42] },
+  { g:'Skin', name:'Microcirc.',     value:'Normal',unit:'perf.', range:'normal',        status:'optimal', anchor:[0.88,0.40,0.10],  labelPos:[1.55,0.3,0.40] },
+  { g:'Skin', name:'Hydration',      value:'54',   unit:'%',      range:'45–60 optimal', status:'optimal', anchor:[-0.40,1.55,0.16], labelPos:[-1.5,1.5,0.40] },
+  { g:'Skin', name:'Thermal Map',    value:'36.6', unit:'°C',     range:'even',          status:'optimal', anchor:[-0.30,0.80,0.20], labelPos:[-1.5,0.55,0.40] },
 ];
 
-const labelsContainer = document.getElementById('labels');
-const leadersSvg = document.getElementById('leaders');
-const labelElements = [];
+const GROUP_META = {
+  'Heart & Circulation': { eyebrow:'ARTERIAL AGE', gaugeNum:44, gaugeCap:'years', gaugeArc:0.62, gaugeColor:'var(--status-monitor)', gaugeDelta:'+1 yr vs. actual', deltaColor:'var(--status-monitor)' },
+  'Body':                { eyebrow:'METABOLIC AGE', gaugeNum:29, gaugeCap:'years', gaugeArc:0.42, gaugeColor:'var(--status-optimal)', gaugeDelta:'−4 yrs vs. actual', deltaColor:'var(--status-optimal)' },
+  'Skin':                { eyebrow:'SKIN AGE',      gaugeNum:31, gaugeCap:'years', gaugeArc:0.5,  gaugeColor:'var(--status-optimal)', gaugeDelta:'−2 yrs vs. actual', deltaColor:'var(--status-optimal)' },
+};
 
-const statusColors = { optimal: '#7CF5C1', watch: '#F2C57C', action: '#F26B7A' };
-const statusLabels = { optimal: 'Optimal', watch: 'Monitor', action: 'Action' };
+const STATUS_HEX = { optimal:'#5E8C6A', monitor:'#C99A4E', high:'#C2614F' };
+const STATUS_LABEL = { optimal:'Optimal', monitor:'Monitor', high:'Elevated' };
 
-for (const bm of BIOMARKERS) {
+// ---------- build DOM annotations + SVG leaders ----------
+const labelsEl = document.getElementById('labels');
+const leadersEl = document.getElementById('leaders');
+const SVGNS = 'http://www.w3.org/2000/svg';
+const items = [];
+
+for (const m of MARKERS) {
   const div = document.createElement('div');
-  div.className = 'biomarker';
-  div.dataset.status = bm.status;
+  div.className = 'annot';
+  div.dataset.status = m.status;
   div.innerHTML = `
-    <div class="biomarker-card">
-      <div class="biomarker-row">
-        <div class="biomarker-name">${bm.name}</div>
-        <div class="biomarker-organ">${bm.organ}</div>
-      </div>
-      <div class="biomarker-value">${bm.value}<span class="biomarker-unit">${bm.unit}</span></div>
-      <div class="biomarker-bar">
-        <div class="biomarker-bar-track"></div>
-        <div class="biomarker-bar-fill" style="width:${Math.round(bm.range * 100)}%"></div>
-      </div>
-      <div class="biomarker-meta">
-        <div class="biomarker-status">${statusLabels[bm.status]}</div>
-        <div class="biomarker-delta">90d ${bm.delta}</div>
-      </div>
-    </div>
-  `;
-  labelsContainer.appendChild(div);
+    <div class="annot-name">${m.name}</div>
+    <div class="annot-value">${m.value}<span class="annot-unit">${m.unit}</span></div>
+    <div class="annot-meta">
+      <span class="annot-status">${STATUS_LABEL[m.status]}</span>
+      <span class="annot-range">${m.range}</span>
+    </div>`;
+  labelsEl.appendChild(div);
 
-  const lineColor = statusColors[bm.status];
+  const hex = STATUS_HEX[m.status];
+  const path = document.createElementNS(SVGNS, 'path');
+  path.setAttribute('fill', 'none');
+  path.setAttribute('stroke', 'rgba(38,44,46,0.18)');
+  path.setAttribute('stroke-width', '1');
+  path.setAttribute('vector-effect', 'non-scaling-stroke');
+  leadersEl.appendChild(path);
 
-  const linePath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  linePath.setAttribute('stroke', lineColor);
-  linePath.setAttribute('stroke-width', '1');
-  linePath.setAttribute('fill', 'none');
-  linePath.setAttribute('stroke-opacity', '0.45');
-  linePath.setAttribute('stroke-linecap', 'round');
-  leadersSvg.appendChild(linePath);
+  const ring = document.createElementNS(SVGNS, 'circle');
+  ring.setAttribute('r', '5'); ring.setAttribute('fill', 'none');
+  ring.setAttribute('stroke', hex); ring.setAttribute('stroke-width', '1');
+  ring.setAttribute('stroke-opacity', '0.5');
+  leadersEl.appendChild(ring);
 
-  const dotOuter = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-  dotOuter.setAttribute('r', '6');
-  dotOuter.setAttribute('fill', 'none');
-  dotOuter.setAttribute('stroke', lineColor);
-  dotOuter.setAttribute('stroke-opacity', '0.5');
-  dotOuter.setAttribute('stroke-width', '1');
-  leadersSvg.appendChild(dotOuter);
+  const dot = document.createElementNS(SVGNS, 'circle');
+  dot.setAttribute('r', '2.6'); dot.setAttribute('fill', hex);
+  leadersEl.appendChild(dot);
 
-  const dotInner = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-  dotInner.setAttribute('r', '2.5');
-  dotInner.setAttribute('fill', lineColor);
-  leadersSvg.appendChild(dotInner);
-
-  labelElements.push({ div, linePath, dotOuter, dotInner, data: bm });
+  items.push({ m, div, path, ring, dot, group: m.g });
 }
 
+// ============================================================
+// Group nav
+// ============================================================
+let activeGroup = 'Heart & Circulation';
+const groupButtons = [...document.querySelectorAll('.group')];
+const countEl = document.getElementById('measuring-count');
+const gaugeArcEl = document.getElementById('gauge-arc');
+const gaugeNumEl = document.getElementById('gauge-num');
+const gaugeCapEl = document.querySelector('.gauge-cap');
+const gaugeEyebrowEl = document.getElementById('gauge-eyebrow');
+const gaugeDeltaEl = document.getElementById('gauge-delta');
+const GAUGE_CIRC = 2 * Math.PI * 66;
+
+function setGroup(g) {
+  activeGroup = g;
+  groupButtons.forEach(b => b.classList.toggle('active', b.dataset.group === g));
+  countEl.textContent = MARKERS.filter(m => m.g === g).length;
+  const meta = GROUP_META[g];
+  gaugeEyebrowEl.textContent = meta.eyebrow;
+  gaugeNumEl.textContent = meta.gaugeNum;
+  gaugeCapEl.textContent = meta.gaugeCap;
+  gaugeArcEl.style.stroke = meta.gaugeColor;
+  gaugeArcEl.style.strokeDashoffset = GAUGE_CIRC * (1 - meta.gaugeArc);
+  gaugeDeltaEl.textContent = meta.gaugeDelta;
+  gaugeDeltaEl.style.color = meta.deltaColor;
+  layoutSlots();
+}
+groupButtons.forEach(b => b.addEventListener('click', () => setGroup(b.dataset.group)));
+
+// ---------- fixed gutter slot layout for the active group ----------
+function layoutSlots() {
+  const w = window.innerWidth, h = window.innerHeight;
+  const leftX = Math.max(180, w * 0.28);
+  const rightX = Math.min(w - 210, w * 0.72);
+  const top = h * 0.15, bot = h * 0.60;
+  const active = items.filter(it => it.group === activeGroup);
+  const left = active.filter(it => it.m.labelPos[0] < 0).sort((p, q) => q.m.anchor[1] - p.m.anchor[1]);
+  const right = active.filter(it => it.m.labelPos[0] >= 0).sort((p, q) => q.m.anchor[1] - p.m.anchor[1]);
+  const place = (arr, x, sideLeft) => arr.forEach((it, i) => {
+    it.slotX = x;
+    it.slotY = arr.length === 1 ? (top + bot) / 2 : top + (bot - top) * i / (arr.length - 1);
+    it.sideLeft = sideLeft;
+  });
+  place(left, leftX, true);
+  place(right, rightX, false);
+}
+
+// initialise gauge dash + first group
+gaugeArcEl.style.strokeDasharray = GAUGE_CIRC;
+gaugeArcEl.style.strokeDashoffset = GAUGE_CIRC;
+setTimeout(() => setGroup('Heart & Circulation'), 200);
+
+// ============================================================
+// Interaction: gentle auto-rotate, pause on drag
+// ============================================================
+let autoRotate = true;
+let resumeTimer;
+controls.addEventListener('start', () => { autoRotate = false; clearTimeout(resumeTimer); });
+controls.addEventListener('end', () => { clearTimeout(resumeTimer); resumeTimer = setTimeout(() => autoRotate = true, 3000); });
+
+// ============================================================
 // Resize
+// ============================================================
 function onResize() {
   const w = window.innerWidth, h = window.innerHeight;
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
+  camera.aspect = w / h; camera.updateProjectionMatrix();
   renderer.setSize(w, h);
-  composer.setSize(w, h);
-  bloomPass.setSize(w, h);
-  leadersSvg.setAttribute('viewBox', `0 0 ${w} ${h}`);
-  leadersSvg.setAttribute('width', w);
-  leadersSvg.setAttribute('height', h);
+  bodyMat.uniforms.uScale.value = renderer.domElement.height * 0.5;
+  bodyMat.uniforms.uPixelRatio.value = renderer.getPixelRatio();
+  leadersEl.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  leadersEl.setAttribute('width', w); leadersEl.setAttribute('height', h);
+  layoutSlots();
 }
 window.addEventListener('resize', onResize);
 onResize();
 
-// Disable auto-rotate on interaction
-let arTimeout;
-controls.addEventListener('start', () => { controls.autoRotate = false; clearTimeout(arTimeout); });
-controls.addEventListener('end', () => { clearTimeout(arTimeout); arTimeout = setTimeout(() => controls.autoRotate = true, 3500); });
-
-// ----- Animate -----
+// ============================================================
+// Animate
+// ============================================================
 const clock = new THREE.Clock();
-const v3a = new THREE.Vector3();
-const v3b = new THREE.Vector3();
+const vAnchor = new THREE.Vector3();
+const vNormal = new THREE.Vector3();
+const vView = new THREE.Vector3();
+let rotPhase = 0;
+let booted = false;
 
 function animate() {
   requestAnimationFrame(animate);
-  const t = clock.getElapsedTime();
+  const dt = Math.min(clock.getDelta(), 0.05);
 
+  // calm pendulum turntable — keeps front organs readable
+  if (autoRotate) rotPhase += dt * 0.22;
+  bodyGroup.rotation.y = Math.sin(rotPhase) * 0.5;
   controls.update();
-
-  // Continuous slow rotation of the body group
-  bodyGroup.rotation.y = t * 0.18;
-
-  // Scan plane sweep
-  const scanY = -2.0 + ((t * 0.5) % 5.2);
-  scanPlane.position.y = scanY;
-  scanPlane.position.x = 0; scanPlane.position.z = 0;
-
-  // Organ breathing pulse via shader uniform
-  for (const [name, mesh] of Object.entries(organMeshes)) {
-    const seed = name.charCodeAt(0) * 0.03;
-    const pulse = 1.0 + Math.sin(t * 1.8 + seed) * 0.22;
-    mesh.material.uniforms.uIntensity.value = ORGANS[name].intensity * pulse;
-  }
-
-  // Heart special — extra throb
-  if (organMeshes.heart) {
-    const beat = Math.pow(Math.max(0, Math.sin(t * 4.2)), 6) * 0.9 + 1.0;
-    organMeshes.heart.material.uniforms.uIntensity.value = ORGANS.heart.intensity * beat;
-  }
-
-  // Ring rotation
-  ring.rotation.z = t * 0.1;
-  ring2.rotation.z = -t * 0.06;
-
-  // Update labels — both label and anchor live in body-group space, so they orbit with the body.
   bodyGroup.updateMatrixWorld();
-  for (const item of labelElements) {
-    const { div, linePath, dotOuter, dotInner, data } = item;
 
-    // Label world position (attached to rotating body group)
-    v3a.set(data.labelPos[0], data.labelPos[1], data.labelPos[2]);
-    v3a.applyMatrix4(bodyGroup.matrixWorld);
-    const labelWorldZ = v3a.z;
-    v3a.project(camera);
-    const labelX = (v3a.x + 1) * window.innerWidth / 2;
-    const labelY = (-v3a.y + 1) * window.innerHeight / 2;
+  const w = window.innerWidth, h = window.innerHeight;
 
-    // Anchor world position (also attached to rotating body group)
-    v3b.set(data.anchor[0], data.anchor[1], data.anchor[2]);
-    v3b.applyMatrix4(bodyGroup.matrixWorld);
-    v3b.project(camera);
-    const anchorX = (v3b.x + 1) * window.innerWidth / 2;
-    const anchorY = (-v3b.y + 1) * window.innerHeight / 2;
+  for (const it of items) {
+    const isActive = it.group === activeGroup;
+    if (!isActive) {
+      if (it.div.style.visibility !== 'hidden') {
+        it.div.style.visibility = 'hidden';
+        it.path.style.opacity = it.ring.style.opacity = it.dot.style.opacity = 0;
+      }
+      continue;
+    }
 
-    // Visibility: fade as label orbits behind the body (labelWorldZ < 0 means behind body axis).
-    const visibility = Math.max(0, Math.min(1, (labelWorldZ + 0.6) * 1.6));
+    // anchor point on the rotating body → screen
+    vAnchor.set(...it.m.anchor).applyMatrix4(bodyGroup.matrixWorld);
+    vView.copy(camera.position).sub(vAnchor).normalize();      // toward camera
+    vAnchor.project(camera);
+    const ax = (vAnchor.x + 1) * w / 2;
+    const ay = (-vAnchor.y + 1) * h / 2;
 
-    div.style.left = labelX + 'px';
-    div.style.top = labelY + 'px';
-    div.style.opacity = visibility;
+    // facing test: radial surface normal rotated into world
+    vNormal.set(it.m.anchor[0], 0, it.m.anchor[2]);
+    if (vNormal.lengthSq() < 1e-5) vNormal.set(0, 0, 1);
+    vNormal.normalize().applyQuaternion(bodyGroup.quaternion);
+    const facing = vNormal.dot(vView);
+    const vis = Math.max(0, Math.min(1, (facing + 0.05) * 1.7));
 
-    // Curved leader path with elbow near card
-    const isRight = labelX > anchorX;
-    const cardEdge = isRight ? -90 : 90;
-    const lineEndX = labelX + cardEdge;
-    const lineEndY = labelY;
-    const ctrlX = anchorX + (lineEndX - anchorX) * 0.55;
-    const ctrlY = anchorY;
-    const path = `M ${anchorX} ${anchorY} Q ${ctrlX} ${ctrlY} ${lineEndX} ${lineEndY}`;
-    linePath.setAttribute('d', path);
-    linePath.setAttribute('stroke-opacity', visibility * 0.55);
+    it.div.style.visibility = 'visible';
+    it.div.style.opacity = vis;
+    it.path.style.opacity = vis * 0.9;
+    it.ring.style.opacity = vis * 0.55;
+    it.dot.style.opacity = vis;
 
-    dotOuter.setAttribute('cx', anchorX);
-    dotOuter.setAttribute('cy', anchorY);
-    dotOuter.setAttribute('stroke-opacity', visibility * 0.6);
-    dotInner.setAttribute('cx', anchorX);
-    dotInner.setAttribute('cy', anchorY);
-    dotInner.setAttribute('opacity', visibility * 0.95);
+    // fixed gutter slot
+    const sx = it.slotX, sy = it.slotY;
+    it.div.style.left = sx + 'px';
+    it.div.style.top = sy + 'px';
+    it.div.classList.toggle('align-left', it.sideLeft);
+    it.div.classList.toggle('align-right', !it.sideLeft);
+
+    // leader: from label inner edge → curve → anchor on body
+    const ex = sx + (it.sideLeft ? 89 : -89);
+    const ey = sy;
+    const cx = ex + (ax - ex) * 0.55;
+    it.path.setAttribute('d', `M ${ex.toFixed(1)} ${ey.toFixed(1)} Q ${cx.toFixed(1)} ${ey.toFixed(1)} ${ax.toFixed(1)} ${ay.toFixed(1)}`);
+    it.ring.setAttribute('cx', ax); it.ring.setAttribute('cy', ay);
+    it.dot.setAttribute('cx', ax); it.dot.setAttribute('cy', ay);
   }
 
-  composer.render();
+  renderer.render(scene, camera);
+
+  if (!booted) {
+    booted = true;
+    const boot = document.getElementById('boot');
+    boot.classList.add('hidden');
+    setTimeout(() => boot.remove(), 800);
+  }
 }
 animate();
