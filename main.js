@@ -1,16 +1,17 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { MeshSurfaceSampler } from 'three/addons/math/MeshSurfaceSampler.js';
 
 // ============================================================
 // OPTIMAL · Full Body Scan — Neko-style blue halftone body.
-// A REAL rigged human mesh is loaded, re-posed into Neko's
-// arms-down A-pose, then uniformly surface-sampled into a dense
-// point cloud. Light background → NormalBlending (not additive),
-// inverted depth cue, real mesh normals, glow from CSS multiply.
-// Body faces +Z; +X is the body's left.
+// The body point cloud is PRE-BAKED (a real human mesh was
+// re-posed to A-pose and voxelized into a halftone lattice
+// offline; the result ships as assets/body.json). At runtime we
+// just decode it — no model download, no loaders, no per-frame
+// voxelization. Light bg → NormalBlending, inverted depth cue,
+// glow from CSS multiply. Body faces +Z; +X is the body's left.
 // ============================================================
+
+// minimal inline OrbitControls-style orbit (drag to rotate, scroll to zoom)
+import { OrbitControls } from './assets/OrbitControls.js';
 
 // ============================================================
 // Three.js scene
@@ -97,9 +98,6 @@ const bodyMat = new THREE.ShaderMaterial({
   `,
 });
 
-let bodyPoints = null;
-let bodyReady = false;
-
 // ---------- soft contact ellipse at the feet ----------
 {
   const c = document.createElement('canvas');
@@ -118,158 +116,38 @@ let bodyReady = false;
 }
 
 // ============================================================
-// Load real human, re-pose to A-pose, surface-sample to points
+// Load the pre-baked halftone lattice (assets/body.json)
+// positions: Int16 (×10000), normals: Int8 (×127)
 // ============================================================
-const MODEL_URL = './assets/xbot.glb';
-const CELL = 0.028;         // halftone lattice spacing (world units)
-const ARM_DROP = 1.24;      // radians the upper arms swing down from T-pose
-const FLIP = false;         // set true if the figure faces away from camera
-const TARGET_HEIGHT = 5.04;
-const FEET_Y = -2.08;
+let bodyPoints = null;
+let bodyReady = false;
 
-const loader = new GLTFLoader();
-loader.load(MODEL_URL, onModelLoaded, undefined, (err) => {
-  console.error('model load failed', err);
-  const boot = document.getElementById('boot');
-  if (boot) boot.classList.add('hidden');
-});
-
-function findBone(bones, includes, excludes = []) {
-  for (const name in bones) {
-    const l = name.toLowerCase();
-    if (includes.every(s => l.includes(s)) && excludes.every(s => !l.includes(s))) return bones[name];
-  }
-  return null;
-}
-
-function onModelLoaded(gltf) {
-  const root = gltf.scene;
-  root.updateMatrixWorld(true);
-
-  const bones = {};
-  const skinned = [];
-  root.traverse((o) => {
-    if (o.isBone) bones[o.name] = o;
-    if (o.isSkinnedMesh) skinned.push(o);
+fetch('./assets/body.json')
+  .then(r => r.json())
+  .then(buildBody)
+  .catch(err => {
+    console.error('body data failed', err);
+    const boot = document.getElementById('boot');
+    if (boot) boot.classList.add('hidden');
   });
 
-  // --- re-pose: swing the upper arms down into an A-pose. Compute the
-  //     swing axis from the actual bone world positions so it works
-  //     regardless of the rig's bind frame. ---
-  const La = findBone(bones, ['leftarm'], ['fore']);
-  const Ra = findBone(bones, ['rightarm'], ['fore']);
-  const Lf = findBone(bones, ['leftforearm']);
-  const Rf = findBone(bones, ['rightforearm']);
-  console.log('bones found:', Object.keys(bones).length, 'arms:', !!La, !!Ra, !!Lf, !!Rf);
-  const DOWN = new THREE.Vector3(0, -1, 0);
-  function dropArm(upper, elbow, angle) {
-    if (!upper || !elbow) return;
-    const a = new THREE.Vector3().setFromMatrixPosition(upper.matrixWorld);
-    const b = new THREE.Vector3().setFromMatrixPosition(elbow.matrixWorld);
-    const dir = b.sub(a).normalize();
-    const axis = new THREE.Vector3().crossVectors(dir, DOWN).normalize();
-    if (axis.lengthSq() < 1e-6) return;     // already vertical
-    upper.rotateOnWorldAxis(axis, angle);
-    upper.updateMatrixWorld(true);
-  }
-  dropArm(La, Lf, ARM_DROP);
-  dropArm(Ra, Rf, ARM_DROP);
-  root.updateMatrixWorld(true);
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
 
-  // --- bake each posed skinned mesh into its own geometry (kept separate
-  //     so the parts can be UNIONED correctly via per-part inside tests) ---
-  const v = new THREE.Vector3();
-  const bakedList = [];
-  for (const mesh of skinned) {
-    mesh.updateMatrixWorld(true);
-    const src = mesh.geometry;
-    const pos = src.attributes.position;
-    const arr = new Float32Array(pos.count * 3);
-    for (let i = 0; i < pos.count; i++) {
-      v.fromBufferAttribute(pos, i);
-      mesh.applyBoneTransform(i, v);     // apply current (A-pose) skinning
-      arr[i*3] = v.x; arr[i*3+1] = v.y; arr[i*3+2] = v.z;
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
-    if (src.index) g.setIndex(src.index.clone());
-    bakedList.push(g);
-  }
-
-  // combined bbox; correct up-axis if Z-up; then fit to target space
-  const whole = new THREE.Box3();
-  for (const g of bakedList) { g.computeBoundingBox(); whole.union(g.boundingBox); }
-  let size = new THREE.Vector3(); whole.getSize(size);
-  if (size.z > size.y * 1.3) {
-    for (const g of bakedList) g.rotateX(-Math.PI / 2);
-    whole.makeEmpty();
-    for (const g of bakedList) { g.computeBoundingBox(); whole.union(g.boundingBox); }
-    whole.getSize(size);
-  }
-  const s = TARGET_HEIGHT / size.y;
-  const cx = (whole.min.x + whole.max.x) / 2, cz = (whole.min.z + whole.max.z) / 2, minY = whole.min.y;
-  const rmeshes = [];
-  for (const g of bakedList) {
-    const a = g.attributes.position.array;
-    for (let i = 0; i < a.length; i += 3) {
-      let X = (a[i]-cx)*s, Y = (a[i+1]-minY)*s + FEET_Y, Z = (a[i+2]-cz)*s;
-      if (FLIP) { X = -X; Z = -Z; }
-      a[i] = X; a[i+1] = Y; a[i+2] = Z;
-    }
-    g.attributes.position.needsUpdate = true;
-    g.computeBoundingSphere();
-    const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
-    m.updateMatrixWorld(true);
-    rmeshes.push(m);
-  }
-
-  // --- scanline-voxelize the UNION into a regular halftone lattice.
-  //     One ray per (y,z) line; a cell is solid if it's inside ANY part
-  //     (odd crossings). This fills every gap and absorbs joint balls. ---
-  const xMin=-1.1, xMax=1.1, yMin=FEET_Y-0.05, yMax=FEET_Y+TARGET_HEIGHT+0.06, zMin=-0.62, zMax=0.62;
-  const NX = Math.ceil((xMax-xMin)/CELL)+1, NY = Math.ceil((yMax-yMin)/CELL)+1, NZ = Math.ceil((zMax-zMin)/CELL)+1;
-  const gi = (i,j,k) => (i*NY+j)*NZ+k;
-  const inside = new Uint8Array(NX*NY*NZ);
-  const ray = new THREE.Raycaster(); ray.far = (xMax-xMin)+0.4;
-  const o = new THREE.Vector3(), d = new THREE.Vector3(1,0,0);
-  for (let j = 0; j < NY; j++) {
-    const Y = yMin + j*CELL;
-    for (let k = 0; k < NZ; k++) {
-      const Z = zMin + k*CELL;
-      o.set(xMin-0.2, Y, Z); ray.set(o, d);
-      const partXs = [];
-      for (const m of rmeshes) {
-        const hits = ray.intersectObject(m, false);
-        if (hits.length) partXs.push(hits.map(h => h.point.x));   // sorted by distance = ascending x
-      }
-      if (!partXs.length) continue;
-      for (let i = 0; i < NX; i++) {
-        const X = xMin + i*CELL;
-        let ins = false;
-        for (const xs of partXs) { let c = 0; for (let t = 0; t < xs.length; t++) { if (xs[t] < X) c++; else break; } if (c & 1) { ins = true; break; } }
-        if (ins) inside[gi(i,j,k)] = 1;
-      }
-    }
-  }
-
-  // --- surface extraction + smoothed occupancy-gradient normals ---
-  const dirs26 = [];
-  for (let dx=-1;dx<=1;dx++) for (let dy=-1;dy<=1;dy++) for (let dz=-1;dz<=1;dz++) if (dx||dy||dz) dirs26.push([dx,dy,dz]);
-  const positions = [], normals = [], sizes = [];
-  for (let i = 1; i < NX-1; i++) for (let j = 1; j < NY-1; j++) for (let k = 1; k < NZ-1; k++) {
-    if (!inside[gi(i,j,k)]) continue;
-    if (inside[gi(i-1,j,k)]&&inside[gi(i+1,j,k)]&&inside[gi(i,j-1,k)]&&inside[gi(i,j+1,k)]&&inside[gi(i,j,k-1)]&&inside[gi(i,j,k+1)]) continue;
-    let nx=0, ny=0, nz=0;
-    for (const [dx,dy,dz] of dirs26) {
-      const ii=i+dx, jj=j+dy, kk=k+dz;
-      if (ii<0||jj<0||kk<0||ii>=NX||jj>=NY||kk>=NZ || !inside[gi(ii,jj,kk)]) { nx+=dx; ny+=dy; nz+=dz; }
-    }
-    const nl = Math.hypot(nx,ny,nz) || 1;
-    positions.push(xMin+i*CELL, yMin+j*CELL, zMin+k*CELL);
-    normals.push(nx/nl, ny/nl, nz/nl);
-    sizes.push(0.78 + Math.random()*0.5);
-  }
-  console.log('lattice points', positions.length/3);
+function buildBody(data) {
+  const n = data.n;
+  const scale = data.scale || 10000;
+  const pi = new Int16Array(b64ToBytes(data.p).buffer);
+  const ni = new Int8Array(b64ToBytes(data.nrm).buffer);
+  const positions = new Float32Array(n * 3);
+  const normals = new Float32Array(n * 3);
+  const sizes = new Float32Array(n);
+  for (let i = 0; i < n * 3; i++) { positions[i] = pi[i] / scale; normals[i] = ni[i] / 127; }
+  for (let i = 0; i < n; i++) sizes[i] = 0.78 + Math.random() * 0.5;
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
