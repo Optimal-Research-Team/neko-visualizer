@@ -312,9 +312,21 @@ const MARKERS = [
 ];
 
 const GROUP_META = {
-  'Heart & Circulation': { eyebrow:'ARTERIAL AGE', gaugeNum:44, gaugeCap:'years', gaugeArc:0.62, gaugeColor:'var(--status-monitor)', gaugeDelta:'+1 yr vs. actual', deltaColor:'var(--status-monitor)' },
-  'Body':                { eyebrow:'METABOLIC AGE', gaugeNum:29, gaugeCap:'years', gaugeArc:0.42, gaugeColor:'var(--status-optimal)', gaugeDelta:'−4 yrs vs. actual', deltaColor:'var(--status-optimal)' },
-  'Skin':                { eyebrow:'SKIN AGE',      gaugeNum:31, gaugeCap:'years', gaugeArc:0.5,  gaugeColor:'var(--status-optimal)', gaugeDelta:'−2 yrs vs. actual', deltaColor:'var(--status-optimal)' },
+  'Heart & Circulation': {
+    eyebrow:'ARTERIAL AGE', gaugeNum:44, gaugeCap:'years', gaugeArc:0.62, gaugeColor:'var(--status-monitor)', gaugeDelta:'+1 yr vs. actual', deltaColor:'var(--status-monitor)',
+    substats:[{v:'360+',l:'Pulse waves'},{v:'120+',l:'Heart sound'},{v:'ECG',l:'Rhythm'}],
+    scaleLabel:'INFLAMMATION · hs-CRP', scaleMarker:16, scaleTicks:['Optimal','Mild','High'],
+  },
+  'Body': {
+    eyebrow:'METABOLIC AGE', gaugeNum:29, gaugeCap:'years', gaugeArc:0.42, gaugeColor:'var(--status-optimal)', gaugeDelta:'−4 yrs vs. actual', deltaColor:'var(--status-optimal)',
+    substats:[{v:'16',l:'Bloodwork'},{v:'10',l:'Measures'},{v:'5.4%',l:'HbA1c'}],
+    scaleLabel:'GLUCOSE · HbA1c', scaleMarker:26, scaleTicks:['Optimal','Raised','High'],
+  },
+  'Skin': {
+    eyebrow:'SKIN AGE', gaugeNum:31, gaugeCap:'years', gaugeArc:0.5, gaugeColor:'var(--status-optimal)', gaugeDelta:'−2 yrs vs. actual', deltaColor:'var(--status-optimal)',
+    substats:[{v:'2000+',l:'Surface img'},{v:'12',l:'Thermal'},{v:'2.5mm',l:'Tissue'}],
+    scaleLabel:'UV EXPOSURE · index', scaleMarker:22, scaleTicks:['Low','Moderate','High'],
+  },
 };
 
 const STATUS_HEX = { optimal:'#5E8C6A', monitor:'#C99A4E', high:'#C2614F' };
@@ -371,6 +383,10 @@ const gaugeNumEl = document.getElementById('gauge-num');
 const gaugeCapEl = document.querySelector('.gauge-cap');
 const gaugeEyebrowEl = document.getElementById('gauge-eyebrow');
 const gaugeDeltaEl = document.getElementById('gauge-delta');
+const substatsEl = document.getElementById('substats');
+const scaleLabelEl = document.getElementById('scale-label');
+const scaleMarkerEl = document.getElementById('scale-marker');
+const scaleTicksEl = document.querySelector('.scale-ticks');
 const GAUGE_CIRC = 2 * Math.PI * 66;
 
 function setGroup(g) {
@@ -385,6 +401,11 @@ function setGroup(g) {
   gaugeArcEl.style.strokeDashoffset = GAUGE_CIRC * (1 - meta.gaugeArc);
   gaugeDeltaEl.textContent = meta.gaugeDelta;
   gaugeDeltaEl.style.color = meta.deltaColor;
+  substatsEl.innerHTML = meta.substats.map(s =>
+    `<div class="substat"><div class="substat-v">${s.v}</div><div class="substat-l">${s.l}</div></div>`).join('');
+  scaleLabelEl.textContent = meta.scaleLabel;
+  scaleMarkerEl.style.left = meta.scaleMarker + '%';
+  scaleTicksEl.innerHTML = meta.scaleTicks.map(t => `<span>${t}</span>`).join('');
   layoutSlots();
 }
 groupButtons.forEach(b => b.addEventListener('click', () => setGroup(b.dataset.group)));
@@ -450,8 +471,8 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
 
-  if (autoRotate) rotPhase += dt * 0.22;
-  bodyGroup.rotation.y = Math.sin(rotPhase) * 0.5;
+  if (autoRotate) rotPhase += dt * 0.2;
+  bodyGroup.rotation.y = Math.sin(rotPhase) * 0.34;
   controls.update();
   bodyGroup.updateMatrixWorld();
 

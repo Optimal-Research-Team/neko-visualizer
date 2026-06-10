@@ -52,6 +52,7 @@
       <span class="measuring-count" id="measuring-count">7</span>
       <span class="measuring-label">measuring points</span>
     </div>
+    <div class="substats" id="substats"></div>
   </section>
 
   <!-- right: heart-age gauge + score -->
@@ -68,8 +69,23 @@
           <div class="gauge-cap">years</div>
         </div>
       </div>
+      <div class="gauge-scale"><span>Younger</span><span>Older</span></div>
       <div class="gauge-delta" id="gauge-delta">−3 yrs vs. actual</div>
     </div>
+
+    <div class="summary-block scale-block">
+      <div class="summary-eyebrow" id="scale-label">INFLAMMATION · hs-CRP</div>
+      <div class="scale">
+        <div class="scale-track">
+          <span style="background:var(--status-optimal)"></span>
+          <span style="background:var(--status-monitor)"></span>
+          <span style="background:var(--status-high)"></span>
+        </div>
+        <div class="scale-marker" id="scale-marker" style="left:18%"></div>
+      </div>
+      <div class="scale-ticks"><span>Optimal</span><span>Mild</span><span>High</span></div>
+    </div>
+
     <div class="summary-block score-block">
       <div class="summary-eyebrow">HEALTH SCORE</div>
       <div class="score-line">
